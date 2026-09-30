@@ -185,19 +185,6 @@ Partitioning and clustering (final): `fct_price_daily` is partitioned by `price_
 | 12 | | dbt models (staging → dims/facts → marts), tests, docs |
 | 13 (10.12) | **Final submission** | Data-quality checks, safe reruns, final architecture, verification queries, known limitations |
 
-### Division of responsibilities (initial)
-
-Both members are expected to understand the full architecture.
-
-| Area | Lead |
-|---|---|
-| Source analysis, Gamma ingestion, data-quality rules | Yazdan Musa |
-| CLOB price ingestion, PostgreSQL schema, Docker Compose | Dániel Polgár |
-| Orchestration (Kestra) | Shared |
-| Terraform / GCP | Dániel Polgár |
-| Data modelling, dbt, calibration mart | Yazdan Musa |
-| Documentation and architecture diagrams | Shared |
-
 ---
 
 ## 7. Anticipated challenges
