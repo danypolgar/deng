@@ -8,9 +8,9 @@ An end-to-end batch data pipeline that ingests resolved Polymarket prediction ma
 
 ## 1. Problem and use case
 
-**Question:** When a prediction market prices an event at 70%, does that event actually happen about 70% of the time?
+**Question:** When a prediction market prices an event at x%, does that event actually happen about x% of the time?
 
-A perfectly calibrated market has observed outcome frequencies equal to its implied probabilities. Deviations show *where* markets are biased. Examples are the favourite-longshot bias (overpricing unlikely outcomes), category effects (politics vs. crypto vs. economics) and horizon effects (30 days vs. 1 day before close).
+A perfectly calibrated market has observed outcome frequencies equal to its implied probabilities. Deviations show *where* markets are biased. Examples are the favourite-longshot bias (overpricing unlikely outcomes), category effects (politics vs. crypto vs. economics) and horizon effects (30 days vs. 1 day before close) in the price buckets of 10% steps.
 
 **End user:** An analyst or researcher studying prediction-market efficiency and bias.
 
