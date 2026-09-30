@@ -4,8 +4,6 @@
 
 An end-to-end batch data pipeline that ingests resolved Polymarket prediction markets and their price history and builds curated BigQuery tables for **calibration research**.
 
-> **Status:** Milestone 1 (Initial pitch, Architecture v0.1). No pipeline code yet.
-
 ---
 
 ## 1. Problem and use case
