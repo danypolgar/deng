@@ -1,0 +1,6 @@
+.DS_Store
+ilias-export/
+.env
+__pycache__/
+*.pyc
+data/
