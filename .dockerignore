@@ -1,0 +1,7 @@
+.git
+.idea
+.env
+ilias-export
+docs
+**/__pycache__
+**/*.pyc

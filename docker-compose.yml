@@ -1,0 +1,113 @@
+name: deng
+
+services:
+
+  postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_DB: ${PG_DATABASE}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    ports:
+      - "${PG_HOST_PORT:-5433}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [deng-net]
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: ingestion/Dockerfile
+    image: deng-pipeline:latest
+    command: ["python", "-m", "polymarket_pipeline", "init-db"]
+    env_file: .env
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [deng-net]
+
+  kestra-postgres:
+    image: postgres:17.6
+    environment:
+      POSTGRES_DB: kestra
+      POSTGRES_USER: kestra
+      POSTGRES_PASSWORD: ${KESTRA_DB_PASSWORD}
+    volumes:
+      - kestra-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [deng-net]
+
+  kestra:
+    image: kestra/kestra:v2.0.4
+    user: "root"
+    command: server standalone --flow-path /app/project-flows --no-tutorials
+    stop_grace_period: 2m
+    ports:
+      - "${KESTRA_HOST_PORT:-8080}:8080"
+    volumes:
+      - kestra-data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-wd:/tmp/kestra-wd
+      - ./orchestration/flows:/app/project-flows:ro
+    environment:
+      ENV_PG_HOST: postgres
+      ENV_PG_PORT: "5432"
+      ENV_PG_DATABASE: ${PG_DATABASE}
+      ENV_PG_USER: ${PG_USER}
+      ENV_PG_PASSWORD: ${PG_PASSWORD}
+      ENV_LOOKBACK_DAYS: ${LOOKBACK_DAYS:-30}
+      ENV_OVERLAP_MINUTES: ${OVERLAP_MINUTES:-15}
+      ENV_CLOB_WORKERS: ${CLOB_WORKERS:-4}
+      ENV_REQUEST_INTERVAL_SECONDS: ${REQUEST_INTERVAL_SECONDS:-0.15}
+      KESTRA_CONFIGURATION: |
+        datasources:
+          postgres:
+            url: jdbc:postgresql://kestra-postgres:5432/kestra
+            driverClassName: org.postgresql.Driver
+            username: kestra
+            password: ${KESTRA_DB_PASSWORD}
+        kestra:
+          server:
+            basic-auth:
+              username: ${KESTRA_USER}
+              password: ${KESTRA_PASSWORD}
+          repository:
+            type: postgres
+          queue:
+            type: postgres
+          storage:
+            type: local
+            local:
+              base-path: /app/storage
+          tasks:
+            tmp-dir:
+              path: /tmp/kestra-wd/tmp
+          url: http://localhost:8080/
+    depends_on:
+      kestra-postgres:
+        condition: service_healthy
+      pipeline:
+        condition: service_completed_successfully
+    networks: [deng-net]
+
+networks:
+  deng-net:
+    name: deng-net
+
+volumes:
+  pg-data:
+  kestra-pg-data:
+  kestra-data:
