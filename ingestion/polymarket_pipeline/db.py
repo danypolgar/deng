@@ -10,19 +10,16 @@ from .config import Settings
 
 log = logging.getLogger(__name__)
 
-# Files applied before every command; all statements are idempotent.
+
 SCHEMA_FILES = ("00_raw.sql", "10_staging.sql")
-# Files applied by the `transform` command, in order (after SCHEMA_FILES).
 TRANSFORM_FILES = ("20_fct_market_snapshot.sql", "30_mart_calibration_summary.sql", "40_dq_checks.sql")
 
 
 def connect(settings: Settings) -> psycopg.Connection:
-    # Autocommit: every `with conn.transaction()` block below is its own real transaction.
     return psycopg.connect(settings.pg_dsn, autocommit=True)
 
 
 def run_sql_files(conn: psycopg.Connection, sql_dir: Path, files: tuple[str, ...]) -> None:
-    """Execute SQL files in one transaction, so a failure leaves the previous state intact."""
     with conn.transaction():
         for name in files:
             log.info("Applying %s", name)
@@ -34,7 +31,6 @@ def ensure_schema(conn: psycopg.Connection, settings: Settings) -> None:
 
 
 def upsert_markets(conn: psycopg.Connection, markets: list[dict], run_id: str) -> int:
-    """Insert or refresh raw market records keyed by market_id (idempotent)."""
     rows = [(str(m["id"]), m.get("closedTime"), Jsonb(m), run_id) for m in markets]
     with conn.transaction(), conn.cursor() as cur:
         cur.executemany(
@@ -55,12 +51,6 @@ def upsert_markets(conn: psycopg.Connection, markets: list[dict], run_id: str) -
 def markets_needing_prices(
     conn: psycopg.Connection, window_start: datetime | None, window_end: datetime | None
 ) -> list[tuple[str, str]]:
-    """(market_id, yes_token_id) of in-scope markets to fetch prices for.
-
-    Without a window: every in-scope market that has no stored price history yet.
-    This makes the step self-healing: a market that failed is picked up by the next run.
-    With a window (rerun/backfill): every in-scope market closed in that window, refetched.
-    """
     if window_start is None:
         query = """
             select s.market_id, s.yes_token_id
@@ -82,7 +72,6 @@ def markets_needing_prices(
 
 
 def save_price_history(conn: psycopg.Connection, market_id: str, token_id: str, payload: dict, run_id: str) -> None:
-    """Replace the stored price history of one market (idempotent)."""
     points = len(payload.get("history") or [])
     with conn.transaction():
         conn.execute(
@@ -101,7 +90,6 @@ def save_price_history(conn: psycopg.Connection, market_id: str, token_id: str, 
 
 
 def markets_watermark(conn: psycopg.Connection) -> datetime | None:
-    """End of the latest successfully loaded market window."""
     row = conn.execute(
         "select max(window_end) from raw.ingestion_log where step = 'markets' and status = 'success'"
     ).fetchone()

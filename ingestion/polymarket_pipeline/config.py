@@ -1,5 +1,3 @@
-"""Runtime configuration, read from environment variables (see .env.example)."""
-
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
