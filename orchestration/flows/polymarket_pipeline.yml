@@ -26,7 +26,6 @@ inputs:
     required: false
     description: Backfill/rerun window end (exclusive, UTC). Empty = now.
 
-# One execution at a time: a long backfill and a scheduled run never write concurrently.
 concurrency:
   limit: 1
   behavior: QUEUE
@@ -38,8 +37,8 @@ tasks:
     containerImage: deng-pipeline:latest
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker
-      pullPolicy: NEVER          # image is built locally by `docker compose build`
-      networkMode: deng-net      # reach the postgres service by name
+      pullPolicy: NEVER
+      networkMode: deng-net
     env:
       PG_HOST: "{{ envs.pg_host }}"
       PG_PORT: "{{ envs.pg_port }}"
@@ -129,11 +128,9 @@ tasks:
       - python -m polymarket_pipeline dq-check
 
 triggers:
-  # Daily: the analysis works on daily prices and day-based horizons, and only ~40 in-scope
-  # markets close per day, so more frequent runs would mostly load nothing.
   - id: daily
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "0 2 * * *"
     timezone: UTC
-    # Missed schedules need no replay: the next run starts from the watermark and covers the gap.
+
     recoverMissedSchedules: NONE
