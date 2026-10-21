@@ -1,0 +1,139 @@
+id: polymarket_pipeline
+namespace: deng.polymarket
+description: |
+  Batch pipeline for Polymarket calibration research (DENG HS26, Team 04).
+  ingest markets (Gamma) -> ingest price history (CLOB) -> transform (staging + marts) -> data-quality checks.
+
+  Scheduled runs (daily at 02:00 UTC) leave the inputs empty and load incrementally from the
+  watermark; the very first run backfills the last 30 days.
+  For a rerun or backfill, execute the flow manually with window_start / window_end.
+
+  Every task runs the same image (deng-pipeline:latest) with Kestra's Docker task runner.
+  Kestra 2.0 supports neither flow-level pluginDefaults nor YAML anchors, so the shared
+  settings (taskRunner, env, retry) are repeated in each task.
+
+labels:
+  project: deng-hs26
+  team: "04"
+
+inputs:
+  - id: window_start
+    type: DATETIME
+    required: false
+    description: Backfill/rerun window start (inclusive, UTC). Empty = incremental from the watermark.
+  - id: window_end
+    type: DATETIME
+    required: false
+    description: Backfill/rerun window end (exclusive, UTC). Empty = now.
+
+# One execution at a time: a long backfill and a scheduled run never write concurrently.
+concurrency:
+  limit: 1
+  behavior: QUEUE
+
+tasks:
+  - id: ingest_markets
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Closed markets from the Gamma API -> raw.markets (upsert on market_id)
+    containerImage: deng-pipeline:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER          # image is built locally by `docker compose build`
+      networkMode: deng-net      # reach the postgres service by name
+    env:
+      PG_HOST: "{{ envs.pg_host }}"
+      PG_PORT: "{{ envs.pg_port }}"
+      PG_DATABASE: "{{ envs.pg_database }}"
+      PG_USER: "{{ envs.pg_user }}"
+      PG_PASSWORD: "{{ envs.pg_password }}"
+      LOOKBACK_DAYS: "{{ envs.lookback_days }}"
+      OVERLAP_MINUTES: "{{ envs.overlap_minutes }}"
+      CLOB_WORKERS: "{{ envs.clob_workers }}"
+      REQUEST_INTERVAL_SECONDS: "{{ envs.request_interval_seconds }}"
+      RUN_ID: "{{ execution.id }}"
+    timeout: PT1H
+    retry:
+      type: exponential
+      interval: PT30S
+      maxInterval: PT5M
+      maxAttempts: 3
+    commands:
+      - python -m polymarket_pipeline ingest-markets --start "{{ inputs.window_start ?? '' }}" --end "{{ inputs.window_end ?? '' }}"
+
+  - id: ingest_prices
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Yes-token price history from the CLOB API -> raw.price_history (replace per market)
+    containerImage: deng-pipeline:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: deng-net
+    env:
+      PG_HOST: "{{ envs.pg_host }}"
+      PG_PORT: "{{ envs.pg_port }}"
+      PG_DATABASE: "{{ envs.pg_database }}"
+      PG_USER: "{{ envs.pg_user }}"
+      PG_PASSWORD: "{{ envs.pg_password }}"
+      CLOB_WORKERS: "{{ envs.clob_workers }}"
+      REQUEST_INTERVAL_SECONDS: "{{ envs.request_interval_seconds }}"
+      RUN_ID: "{{ execution.id }}"
+    timeout: PT1H
+    retry:
+      type: exponential
+      interval: PT30S
+      maxInterval: PT5M
+      maxAttempts: 3
+    commands:
+      - python -m polymarket_pipeline ingest-prices --start "{{ inputs.window_start ?? '' }}" --end "{{ inputs.window_end ?? '' }}"
+
+  - id: transform
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Rebuild staging views, marts.fct_market_snapshot and marts.mart_calibration_summary
+    containerImage: deng-pipeline:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: deng-net
+    env:
+      PG_HOST: "{{ envs.pg_host }}"
+      PG_PORT: "{{ envs.pg_port }}"
+      PG_DATABASE: "{{ envs.pg_database }}"
+      PG_USER: "{{ envs.pg_user }}"
+      PG_PASSWORD: "{{ envs.pg_password }}"
+      RUN_ID: "{{ execution.id }}"
+    timeout: PT15M
+    retry:
+      type: constant
+      interval: PT30S
+      maxAttempts: 2
+    commands:
+      - python -m polymarket_pipeline transform
+
+  - id: dq_check
+    type: io.kestra.plugin.scripts.shell.Commands
+    description: Data-quality checks; fails the execution if an error-level check fails (no retry - a failed check is a data problem)
+    containerImage: deng-pipeline:latest
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: deng-net
+    env:
+      PG_HOST: "{{ envs.pg_host }}"
+      PG_PORT: "{{ envs.pg_port }}"
+      PG_DATABASE: "{{ envs.pg_database }}"
+      PG_USER: "{{ envs.pg_user }}"
+      PG_PASSWORD: "{{ envs.pg_password }}"
+      RUN_ID: "{{ execution.id }}"
+    timeout: PT15M
+    commands:
+      - python -m polymarket_pipeline dq-check
+
+triggers:
+  # Daily: the analysis works on daily prices and day-based horizons, and only ~40 in-scope
+  # markets close per day, so more frequent runs would mostly load nothing.
+  - id: daily
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 2 * * *"
+    timezone: UTC
+    # Missed schedules need no replay: the next run starts from the watermark and covers the gap.
+    recoverMissedSchedules: NONE
