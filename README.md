@@ -94,15 +94,11 @@ CLOB `/prices-history`:
 
 ---
 
-## 4. Architecture
+## 4. Architecture v0.1 (initial plan)
 
-![Architecture: Polymarket calibration pipeline](docs/architecture.svg)
+![Architecture v0.1: initial plan](docs/architecture-v0.1.svg)
 
-Solid = implemented (midterm, local Docker Compose). Dashed = planned for the final (GCP). Source: [`docs/architecture.mmd`](docs/architecture.mmd), rendered to SVG with [Pele](https://github.com/kepano/pele).
-
-### Original plan (v0.1)
-
-The implemented midterm version and how it differs from this plan are described in [section 5](#5-midterm-implementation-v02).
+Solid = planned final cloud path, dashed = local/midterm path. Source: [`docs/architecture-v0.1.mmd`](docs/architecture-v0.1.mmd). The implemented midterm architecture (v0.2) and what changed are in [section 5](#5-architecture-v02-midterm).
 
 **Pipeline steps**
 1. **Ingest markets:** page through Gamma `/markets` for closed markets in the load window, apply scope filters, and write the raw JSON pages.
@@ -131,7 +127,11 @@ The implemented midterm version and how it differs from this plan are described 
 
 ---
 
-## 5. Midterm implementation (v0.2)
+## 5. Architecture v0.2 (midterm)
+
+![Architecture v0.2: midterm](docs/architecture-v0.2.svg)
+
+Solid = implemented (midterm, local Docker Compose). Dashed = planned for the final (GCP). Source: [`docs/architecture-v0.2.mmd`](docs/architecture-v0.2.mmd). Both diagrams are rendered to SVG with [Pele](https://github.com/kepano/pele).
 
 Every Kestra task starts a container from the same image, `deng-pipeline:latest` (Kestra **Docker task runner**), and runs one CLI command: `python -m polymarket_pipeline <ingest-markets|ingest-prices|transform|dq-check>`. The same commands can be run by hand with `docker compose run`, which makes each step testable without the orchestrator.
 
