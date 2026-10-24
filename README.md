@@ -163,6 +163,24 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | Tests | not planned | unit tests + SQL integration tests on fixture data, run by GitHub Actions on every push | The snapshot rules (no look-ahead, staleness, buckets) are easy to break silently. A test fails if they change. |
 | Scope thresholds | hard-coded | defined once in `config.py`, written to `staging.scope_settings` before every command | The API pre-filter and the SQL scope rules can no longer disagree |
 
+### Docker setup
+
+| Practice | Implementation | Why |
+|---|---|---|
+| Reproducible images | Base images pinned by digest (multi-arch: arm64 and amd64). Python dependencies installed from `requirements.lock` with exact versions and `--no-deps`, checked with `pip check`. | Every reviewer and CI run gets the same bits. A new upstream release cannot break the build. |
+| Small runtime image | Multi-stage build: dependencies go into a venv in a `build` stage; only the venv, code and SQL are copied into `runtime`. The venv has no pip. | Fewer packages, less to patch, 227 MB. |
+| Separate test image | `test` stage = runtime + pytest + tests, started with `docker compose run --rm test`. | Production image contains no test code or test tools. |
+| No root | Runtime runs as fixed uid/gid `10001`. Code and SQL are owned by root and read-only for that user. | A bug in the pipeline cannot change its own code. |
+| Hardened one-shot containers | `read_only: true`, `tmpfs: /tmp`, `cap_drop: [ALL]`, `no-new-privileges` for `pipeline` and `test`. | The pipeline only needs the network and the database. |
+| Least-privilege config | Pipeline containers receive only the 5 database settings and `DOH_URL`, not the whole `.env` (no Kestra passwords). | Each container sees only the secrets it needs. |
+| Network isolation | `kestra-postgres` is on an internal network that only Kestra can reach. | Task containers cannot read or change Kestra's metadata DB. |
+| Ports on localhost only | `127.0.0.1:8080` and `127.0.0.1:5433`. | Kestra and PostgreSQL are not reachable from other computers on the network. |
+| Health checks and startup order | PostgreSQL: `pg_isready`. Kestra: `/health` on its management port. `depends_on` waits for healthy DBs and a successful `init-db`. | `docker compose ps` shows `healthy` when the stack is ready. Nothing starts against a DB that is not up. |
+| Clear errors | Required `.env` values use `${VAR:?message}`. | Without `.env`, Compose stops with `set PG_DATABASE in .env (cp .env.example .env)` instead of starting with empty passwords. |
+| Small build context | `.dockerignore` is an allowlist. | `.git`, `.env`, docs and data never go into the build. |
+| Operations | Log rotation (10 MB × 3), `restart: unless-stopped` for long-running services, graceful stop periods. | Logs cannot fill the disk; the stack survives a Docker restart. |
+| Checked in CI | hadolint on the Dockerfile, `docker compose config`, image build, and the full test suite inside the compose stack. | A broken Docker setup fails the build before a reviewer sees it. |
+
 ### Ingestion design
 
 | Concern | Implementation |
@@ -368,13 +386,15 @@ The numbers change with the day of the backfill. Our two reference runs:
 | 2026-10-20 | ~6 min | 7,363 | 1,037 | 3,075 | all `PASS` | counts unchanged |
 | 2026-10-24 (macOS) | ~7.5 min | 8,734 | 919 | 2,719 | all `PASS` | counts unchanged |
 
-### 9.8 Run the unit tests
+### 9.8 Run the tests
 
 1. Run this command:
    ```bash
-   docker compose run --rm -u root pipeline sh -c "pip install -q pytest && PYTHONPATH=/app python -m pytest /app/tests"
+   docker compose run --rm test
    ```
    **Result:** `25 passed`. 12 are unit tests. 13 are SQL integration tests: they make a temporary database, load fixture markets with known correct results, run the real SQL files and delete the database after the test.
+
+> **Note:** The `test` service uses the `test` stage of the Dockerfile (runtime image + pytest + tests). `docker compose up` does not start it.
 
 > **Note:** The SQL integration tests check the scope rules, the no-look-ahead rule, the 3-day staleness limit, the buckets, the DQ checks, idempotency and the retry of empty histories. If you change one of these rules, a test fails. GitHub Actions runs all tests on each push (see the CI badge at the top).
 
@@ -412,11 +432,13 @@ The numbers change with the day of the backfill. Our two reference runs:
 ├── README.md
 ├── docs/                       # architecture diagrams (.mmd source + .svg), screenshots
 ├── .github/workflows/ci.yml    # GitHub Actions: tests with a Postgres service, Docker build
-├── docker-compose.yml          # postgres, pipeline (image + init-db), kestra, kestra-postgres
+├── docker-compose.yml          # postgres, pipeline (image + init-db), kestra, kestra-postgres, test (profile)
+├── .dockerignore               # allowlist: only code, SQL and requirements go into the build
 ├── .env.example                # configuration template (no secrets committed)
 ├── ingestion/
-│   ├── Dockerfile              # image deng-pipeline:latest, used by every Kestra task
-│   ├── requirements.txt
+│   ├── Dockerfile              # multi-stage: build (venv) → runtime (deng-pipeline:latest) → test
+│   ├── requirements.txt        # direct dependencies
+│   ├── requirements.lock       # all dependencies, exact versions (installed by the image)
 │   ├── requirements-dev.txt
 │   ├── polymarket_pipeline/    # Python package (CLI: python -m polymarket_pipeline)
 │   │   ├── cli.py              # commands, load-window logic
@@ -453,5 +475,5 @@ The numbers change with the day of the backfill. Our two reference runs:
 - **Corrections after close:** incremental runs read markets by close time. A market that is changed after it closed (e.g. a disputed resolution) is only picked up by an explicit rerun of its window.
 - **Empty price histories:** an in-scope market whose CLOB history is empty is fetched again by the next runs, at most 3 times in total. After that it stays empty and the `in_scope_market_with_empty_price_history` warning reports it.
 - **Full rebuild of the marts** on every run: fine at this size (~1 s); the BigQuery version will use incremental `MERGE`.
-- **Local security setup:** database passwords reach the task containers as Kestra environment variables, Kestra runs as root to use the Docker socket, and the Kestra login is a basic-auth user from `.env`. This is acceptable for a local development setup, not for production.
+- **Local security setup:** Kestra runs as root to use the Docker socket, which gives it control over the host's Docker. Database passwords reach the task containers as Kestra environment variables, and the Kestra login is a basic-auth user from `.env`. This is acceptable for a local development setup, not for production (see [Docker setup](#docker-setup) for what we hardened).
 - **Kestra 2.0 syntax:** flow-level `pluginDefaults` and YAML anchors are not supported, so the shared task settings are repeated in each of the four tasks.

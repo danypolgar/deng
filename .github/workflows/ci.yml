@@ -27,19 +27,29 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: ingestion/requirements*.txt
+          cache-dependency-path: |
+            ingestion/requirements.lock
+            ingestion/requirements-dev.txt
       - run: pip install -r ingestion/requirements-dev.txt
       - name: pytest
         working-directory: ingestion
         run: python -m pytest -v -rs
 
   docker:
-    name: Docker image + compose config
+    name: Docker image + compose stack tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ingestion/Dockerfile
       - run: cp .env.example .env
       - run: docker compose config --quiet
       - run: docker compose build pipeline
       - name: CLI starts inside the image
         run: docker run --rm deng-pipeline:latest python -m polymarket_pipeline --help
+      - name: Tests in the compose stack (same command as README 9.8)
+        run: docker compose run --rm test
+      - if: always()
+        run: docker compose --profile test down -v
