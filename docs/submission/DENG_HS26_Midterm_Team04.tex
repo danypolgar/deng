@@ -1,0 +1,72 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+
+\definecolor{hslu}{HTML}{1F1F1F}
+\newcommand{\commit}{0858e29281a791ec382a7509a46ad4bf461dc272}
+\newcommand{\repo}{https://github.com/danypolgar/deng}
+
+\pagestyle{empty}
+
+\begin{document}
+
+{\small Hochschule Luzern \hfill DENG Data Engineering HS26}
+
+\vspace{1cm}
+
+{\LARGE\bfseries Midterm Submission\par}
+\vspace{0.3cm}
+{\large Polymarket Calibration Pipeline\par}
+
+\vspace{1.2cm}
+
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{}>{\bfseries}p{4.2cm}p{10.8cm}@{}}
+\toprule
+Team number      & 04 \\
+Team members     & Yazdan Musa \newline Dániel Polgár \\
+Milestone        & Midterm (Week 7) \\
+\midrule
+Repository URL   & \url{\repo} \\
+Release tag      & \texttt{midterm} \newline \url{\repo/tree/midterm} \\
+Commit hash      & \texttt{\commit} \\
+Commit date      & 24 October 2026, 20:53 (Europe/Zurich) \\
+Visibility       & Public. No access grant is necessary. \\
+\bottomrule
+\end{tabular}
+
+\vspace{0.6cm}
+
+\section*{Assessed content}
+
+The assessed repository state is the tag \texttt{midterm}, which points to the commit hash above.
+The \texttt{README.md} at this commit contains:
+
+\begin{itemize}\itemsep0.2em
+  \item Use case, data source and data-quality risks (sections 1 to 3)
+  \item Architecture v0.1 and Architecture v0.2 with the changes and their reasons (sections 4 and 5)
+  \item Ingestion design, transformations and their justification, data model (sections 5 and 6)
+  \item Setup, execution, rerun, backfill and verification instructions for reviewers (section 9)
+  \item Known limitations (section 11)
+\end{itemize}
+
+\section*{Notes for reviewers}
+
+\begin{itemize}\itemsep0.2em
+  \item Only Docker is necessary. No API keys and no cloud credentials are necessary.
+  \item No VPN is necessary in Switzerland. The pipeline resolves the Polymarket API hosts through DNS-over-HTTPS.
+  \item The first run (30-day backfill) takes approximately 6 to 8 minutes.
+\end{itemize}
+
+\vfill
+{\small Submitted through ILIAS by Team 04.}
+
+\end{document}
