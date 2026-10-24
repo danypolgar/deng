@@ -21,6 +21,10 @@ union all
 select 'stg_price_in_0_1', 'error', count(*)
   from staging.stg_price_history where price not between 0 and 1
 union all
+-- stg_markets cross-joins the single settings row; without it every market silently disappears.
+select 'scope_settings_single_row', 'error', abs(count(*) - 1)
+  from staging.scope_settings
+union all
 select 'in_scope_market_without_price_history', 'warn', count(*)
   from staging.stg_markets m
  where m.in_scope and not exists (select 1 from raw.price_history p where p.market_id = m.market_id)

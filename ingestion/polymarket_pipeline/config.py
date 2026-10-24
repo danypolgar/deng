@@ -32,8 +32,15 @@ class Settings:
     lookback_days: int = field(default_factory=lambda: int(_env("LOOKBACK_DAYS", "30")))
     overlap_minutes: int = field(default_factory=lambda: int(_env("OVERLAP_MINUTES", "15")))
 
+    # Scope thresholds. Single source of truth: ensure_schema() writes them into
+    # staging.scope_settings, which staging.stg_markets reads. The Gamma pre-filter uses the
+    # same values. Constants on purpose: every task must see the same values.
     min_volume_usd: float = 10_000
     min_days_open: int = 30
+
+    # An in-scope market whose CLOB history comes back empty is fetched again by later
+    # runs until it has been tried this many times.
+    max_empty_history_attempts: int = 3
 
     sql_dir: Path = field(default_factory=lambda: Path(_env("SQL_DIR", str(_DEFAULT_SQL_DIR))))
     run_id: str = field(default_factory=lambda: _env("RUN_ID", "manual"))

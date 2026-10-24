@@ -28,6 +28,16 @@ values
 on conflict (tag_label) do update set category = excluded.category, priority = excluded.priority;
 
 
+-- Scope thresholds (single row). Written by the pipeline from config.py (Settings) before
+-- every command, so the Python pre-filter and these SQL rules always use the same values.
+create table if not exists staging.scope_settings (
+    id             boolean     primary key default true check (id),   -- forces exactly one row
+    min_volume_usd numeric     not null,
+    min_days_open  numeric     not null,
+    updated_at     timestamptz not null default now()
+);
+
+
 -- One row per raw market, parsed and typed, with the scope decision and its reason.
 create or replace view staging.stg_markets as
 with parsed as (
@@ -90,12 +100,13 @@ select
         when e.category = 'other'                        then 'out_of_scope_category'
         when e.resolution_status is distinct from 'resolved' then 'not_resolved'
         when e.outcome is null                           then 'unclean_resolution'
-        when coalesce(e.volume_usd, 0) < 10000           then 'low_volume'
-        when e.days_open is null or e.days_open < 30     then 'open_less_than_30_days'
+        when coalesce(e.volume_usd, 0) < cfg.min_volume_usd then 'low_volume'
+        when e.days_open is null or e.days_open < cfg.min_days_open then 'open_less_than_30_days'
         when e.yes_token_id is null                      then 'missing_token_id'
     end                                                  as exclusion_reason,
     e.ingested_at
 from enriched e
+cross join staging.scope_settings cfg
 )
 select s.*, s.exclusion_reason is null as in_scope
 from scoped s;

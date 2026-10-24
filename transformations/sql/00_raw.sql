@@ -24,6 +24,9 @@ create table if not exists raw.price_history (
     run_id      text        not null,
     ingested_at timestamptz not null default now()
 );
+-- How often the history was fetched. Later runs retry an empty history until the
+-- limit (Settings.max_empty_history_attempts). Added after v0.2, so use ALTER for existing DBs.
+alter table raw.price_history add column if not exists fetch_attempts integer not null default 1;
 
 -- One row per pipeline step execution; also provides the incremental watermark.
 create table if not exists raw.ingestion_log (

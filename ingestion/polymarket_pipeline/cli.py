@@ -78,7 +78,7 @@ def cmd_ingest_prices(settings: Settings, args) -> int:
 
     with db.connect(settings) as conn:
         db.ensure_schema(conn, settings)
-        todo = db.markets_needing_prices(conn, start, end)
+        todo = db.markets_needing_prices(conn, start, end, settings.max_empty_history_attempts)
         if args.limit:
             todo = todo[: args.limit]
         log.info("Fetching price history for %d market(s)", len(todo))

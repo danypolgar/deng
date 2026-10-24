@@ -27,7 +27,26 @@ def run_sql_files(conn: psycopg.Connection, sql_dir: Path, files: tuple[str, ...
 
 
 def ensure_schema(conn: psycopg.Connection, settings: Settings) -> None:
-    run_sql_files(conn, settings.sql_dir, SCHEMA_FILES)
+    with conn.transaction():
+        run_sql_files(conn, settings.sql_dir, SCHEMA_FILES)
+        write_scope_settings(conn, settings)
+
+
+def write_scope_settings(conn: psycopg.Connection, settings: Settings) -> None:
+    """Copy the scope thresholds from Settings into the table that staging.stg_markets reads."""
+    conn.execute(
+        """
+        insert into staging.scope_settings (id, min_volume_usd, min_days_open, updated_at)
+        values (true, %s, %s, now())
+        on conflict (id) do update
+           set min_volume_usd = excluded.min_volume_usd,
+               min_days_open  = excluded.min_days_open,
+               updated_at     = excluded.updated_at
+         where (staging.scope_settings.min_volume_usd, staging.scope_settings.min_days_open)
+               is distinct from (excluded.min_volume_usd, excluded.min_days_open)
+        """,
+        (settings.min_volume_usd, settings.min_days_open),
+    )
 
 
 def upsert_markets(conn: psycopg.Connection, markets: list[dict], run_id: str) -> int:
@@ -49,17 +68,24 @@ def upsert_markets(conn: psycopg.Connection, markets: list[dict], run_id: str) -
 
 
 def markets_needing_prices(
-    conn: psycopg.Connection, window_start: datetime | None, window_end: datetime | None
+    conn: psycopg.Connection,
+    window_start: datetime | None,
+    window_end: datetime | None,
+    max_empty_attempts: int = 3,
 ) -> list[tuple[str, str]]:
     if window_start is None:
+        # Markets without a history, plus markets whose history came back empty and that
+        # have not used up their attempts yet (an empty answer is often a temporary gap).
         query = """
             select s.market_id, s.yes_token_id
               from staging.stg_markets s
+              left join raw.price_history p on p.market_id = s.market_id
              where s.in_scope
-               and not exists (select 1 from raw.price_history p where p.market_id = s.market_id)
+               and (p.market_id is null
+                    or (p.point_count = 0 and p.fetch_attempts < %s))
              order by s.closed_time desc
         """
-        params = ()
+        params = (max_empty_attempts,)
     else:
         query = """
             select s.market_id, s.yes_token_id
@@ -76,14 +102,15 @@ def save_price_history(conn: psycopg.Connection, market_id: str, token_id: str, 
     with conn.transaction():
         conn.execute(
             """
-            insert into raw.price_history (market_id, token_id, payload, point_count, run_id, ingested_at)
-            values (%s, %s, %s, %s, %s, now())
+            insert into raw.price_history (market_id, token_id, payload, point_count, run_id, ingested_at, fetch_attempts)
+            values (%s, %s, %s, %s, %s, now(), 1)
             on conflict (market_id) do update
-               set token_id    = excluded.token_id,
-                   payload     = excluded.payload,
-                   point_count = excluded.point_count,
-                   run_id      = excluded.run_id,
-                   ingested_at = excluded.ingested_at
+               set token_id       = excluded.token_id,
+                   payload        = excluded.payload,
+                   point_count    = excluded.point_count,
+                   run_id         = excluded.run_id,
+                   ingested_at    = excluded.ingested_at,
+                   fetch_attempts = raw.price_history.fetch_attempts + 1
             """,
             (market_id, token_id, Jsonb(payload), points, run_id),
         )
