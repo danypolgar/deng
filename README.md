@@ -2,7 +2,7 @@
 
 **DENG HS26 · Team 04 · Yazdan Musa & Dániel Polgár**
 
-An end-to-end batch data pipeline that ingests resolved Polymarket prediction markets and their price history and builds curated BigQuery tables for **calibration research**.
+An end-to-end batch data pipeline that ingests resolved Polymarket prediction markets and their price history and builds curated tables for **calibration research**. The midterm version runs locally (Docker Compose, Kestra, PostgreSQL); the final version moves storage and transformations to Google Cloud (GCS, BigQuery).
 
 ---
 
