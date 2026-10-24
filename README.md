@@ -1,5 +1,7 @@
 # Polymarket Calibration Pipeline
 
+[![CI](https://github.com/danypolgar/deng/actions/workflows/ci.yml/badge.svg)](https://github.com/danypolgar/deng/actions/workflows/ci.yml)
+
 **DENG HS26 · Team 04 · Yazdan Musa & Dániel Polgár**
 
 An end-to-end batch data pipeline that ingests resolved Polymarket prediction markets and their price history and builds curated tables for **calibration research**. The midterm version runs locally (Docker Compose, Kestra, PostgreSQL). The final version moves storage and transformations to Google Cloud (GCS, BigQuery).
@@ -158,6 +160,8 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | Category scope | mainly politics, crypto, economics; `other` as catch-all | **only** politics, crypto, economics; `other` excluded (`out_of_scope_category`) | Team decision: keeps the analysis focused on the three categories of the research questions; costs ~16% of the markets (mostly AI/tech) |
 | Transformation | SQL / dbt | plain SQL files, executed by the pipeline image; full rebuild of marts in one transaction | Data is small (~2,700–3,100 snapshot rows); dbt is planned for BigQuery |
 | Data quality | planned for the final | `marts.dq_results` view (error / warn), checked as the last task | Cheap to add now and it protects the core table |
+| Tests | not planned | unit tests + SQL integration tests on fixture data, run by GitHub Actions on every push | The snapshot rules (no look-ahead, staleness, buckets) are easy to break silently. A test fails if they change. |
+| Scope thresholds | hard-coded | defined once in `config.py`, written to `staging.scope_settings` before every command | The API pre-filter and the SQL scope rules can no longer disagree |
 
 ### Ingestion design
 
@@ -167,7 +171,7 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | **Full vs. incremental** | Incremental by default. The first run has no watermark and therefore backfills `LOOKBACK_DAYS`. Closed markets do not change, so a full reload is never needed. |
 | **Load window** | `ingest-markets` loads markets with `window_start ≤ closedTime < window_end`, paging newest-first and stopping at the first page older than the window. |
 | **Idempotency** | `raw.markets` upserts on `market_id`; `raw.price_history` replaces one row per market; marts are rebuilt from staging. Running the same window twice gives the same tables. |
-| **Price step** | Without a window: fetches every in-scope market that has **no price history yet** (self-healing: a market that failed is retried by the next run). With a window: refetches all in-scope markets closed in that window. |
+| **Price step** | Without a window: fetches every in-scope market that has **no price history yet**, plus markets whose history came back **empty** (up to 3 attempts, counted in `raw.price_history.fetch_attempts`). This is self-healing: a market that failed is retried by the next run. With a window: refetches all in-scope markets closed in that window. |
 | **Failure behaviour** | HTTP 429/5xx: up to 6 retries with exponential backoff inside the client. One failing market is logged and skipped (`status = partial`); the task fails only if every market failed. Kestra retries the API tasks up to 3 times (exponential, 30 s → 5 min). A failed DQ check fails the execution without retry. |
 | **Concurrency** | Kestra `concurrency.limit: 1` (queue): a long backfill and a scheduled run never write at the same time. |
 | **Observability** | Every step writes a row to `raw.ingestion_log` (run id = Kestra execution id, window, fetched / loaded / failed counts). |
@@ -370,7 +374,9 @@ The numbers change with the day of the backfill. Our two reference runs:
    ```bash
    docker compose run --rm -u root pipeline sh -c "pip install -q pytest && PYTHONPATH=/app python -m pytest /app/tests"
    ```
-   **Result:** `12 passed`.
+   **Result:** `25 passed`. 12 are unit tests. 13 are SQL integration tests: they make a temporary database, load fixture markets with known correct results, run the real SQL files and delete the database after the test.
+
+> **Note:** The SQL integration tests check the scope rules, the no-look-ahead rule, the 3-day staleness limit, the buckets, the DQ checks, idempotency and the retry of empty histories. If you change one of these rules, a test fails. GitHub Actions runs all tests on each push (see the CI badge at the top).
 
 > **Note:** You can also run the tests locally with Python 3.12:
 > `pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest`
@@ -405,6 +411,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 .
 ├── README.md
 ├── docs/                       # architecture diagrams (.mmd source + .svg), screenshots
+├── .github/workflows/ci.yml    # GitHub Actions: tests with a Postgres service, Docker build
 ├── docker-compose.yml          # postgres, pipeline (image + init-db), kestra, kestra-postgres
 ├── .env.example                # configuration template (no secrets committed)
 ├── ingestion/
@@ -419,7 +426,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 │   │   ├── gamma.py            # Gamma API: closed markets (keyset paging)
 │   │   ├── clob.py             # CLOB API: price history
 │   │   └── db.py               # PostgreSQL access
-│   └── tests/                  # pytest unit tests (see Unit tests in section 9)
+│   └── tests/                  # unit tests + SQL integration tests (see 9.8)
 ├── transformations/sql/
 │   ├── 00_raw.sql              # schemas, raw tables, ingestion log
 │   ├── 10_staging.sql          # tag → category map, staging views, scope rules
@@ -444,7 +451,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 - **Small sample:** 30 days give ~1,000 markets (crypto only ~60). Several category × horizon × bucket cells have fewer than 30 markets and should not be over-interpreted. A longer `LOOKBACK_DAYS` gives more data at the cost of a longer backfill.
 - **Narrow topic scope:** sports and every market outside politics, crypto and economics are excluded (~16% of the otherwise in-scope markets, mostly AI/tech). The category comes from a hand-maintained tag list, so a relevant market with an unmapped tag is excluded too; check `staging.stg_markets where exclusion_reason = 'out_of_scope_category'`.
 - **Corrections after close:** incremental runs read markets by close time. A market that is changed after it closed (e.g. a disputed resolution) is only picked up by an explicit rerun of its window.
-- **Empty price histories:** an in-scope market whose CLOB history is empty is stored and not refetched automatically (reported by the `in_scope_market_with_empty_price_history` warning).
+- **Empty price histories:** an in-scope market whose CLOB history is empty is fetched again by the next runs, at most 3 times in total. After that it stays empty and the `in_scope_market_with_empty_price_history` warning reports it.
 - **Full rebuild of the marts** on every run: fine at this size (~1 s); the BigQuery version will use incremental `MERGE`.
 - **Local security setup:** database passwords reach the task containers as Kestra environment variables, Kestra runs as root to use the Docker socket, and the Kestra login is a basic-auth user from `.env`. This is acceptable for a local development setup, not for production.
 - **Kestra 2.0 syntax:** flow-level `pluginDefaults` and YAML anchors are not supported, so the shared task settings are repeated in each of the four tasks.
