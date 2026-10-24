@@ -1,7 +1,14 @@
-.git
-.idea
-.env
-ilias-export
-docs
+# Allowlist: the build context contains only what the Dockerfile copies.
+# Everything else (.git, .env, docs, data, local caches) never leaves the host.
+*
+
+!ingestion/requirements.txt
+!ingestion/requirements.lock
+!ingestion/requirements-dev.txt
+!ingestion/polymarket_pipeline/
+!ingestion/tests/
+!transformations/sql/
+
 **/__pycache__
 **/*.pyc
+**/.pytest_cache

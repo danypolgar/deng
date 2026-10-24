@@ -1,0 +1,11 @@
+# Fully pinned runtime dependencies (direct + transitive), generated from requirements.txt.
+# The image installs exactly these versions, so every build is the same.
+# Update: change requirements.txt, rebuild, then copy `pip freeze` from the image into this file.
+certifi==2026.10.23
+charset-normalizer==3.5.2
+idna==3.20
+psycopg==3.2.3
+psycopg-binary==3.2.3
+requests==2.32.3
+typing_extensions==4.16.0
+urllib3==2.8.0
