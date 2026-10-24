@@ -11,7 +11,7 @@
 \usepackage{parskip}
 
 \definecolor{hslu}{HTML}{1F1F1F}
-\newcommand{\commit}{0858e29281a791ec382a7509a46ad4bf461dc272}
+\providecommand{\commithash}{}
 \newcommand{\repo}{https://github.com/danypolgar/deng}
 
 \pagestyle{empty}
@@ -37,8 +37,12 @@ Milestone        & Midterm (Week 7) \\
 \midrule
 Repository URL   & \url{\repo} \\
 Release tag      & \texttt{midterm} \newline \url{\repo/tree/midterm} \\
-Commit hash      & \texttt{\commit} \\
-Commit date      & 24 October 2026, 20:53 (Europe/Zurich) \\
+\ifx\commithash\empty
+Commit hash      & The commit that the tag \texttt{midterm} points to. This document is part of that commit. \\
+\else
+Commit hash      & \texttt{\commithash} \\
+\fi
+Date             & 24 October 2026 \\
 Visibility       & Public. No access grant is necessary. \\
 \bottomrule
 \end{tabular}
@@ -47,7 +51,7 @@ Visibility       & Public. No access grant is necessary. \\
 
 \section*{Assessed content}
 
-The assessed repository state is the tag \texttt{midterm}, which points to the commit hash above.
+The assessed repository state is the tag \texttt{midterm}.
 The \texttt{README.md} at this commit contains:
 
 \begin{itemize}\itemsep0.2em
