@@ -229,48 +229,107 @@ Partitioning and clustering (final): `fct_price_daily` is partitioned by `price_
 
 ## 9. Setup and verification
 
-### Prerequisites
+The procedures in this section use ASD-STE100 style: one action for each step, followed by the result.
 
-- Docker Desktop (macOS/Windows with WSL2) or Docker Engine with Compose v2. Kestra needs access to the Docker socket (`/var/run/docker.sock`).
-- About 4 GB of free RAM; ports **8080** (Kestra) and **5433** (PostgreSQL) free, or change them in `.env`.
-- Internet access. **No VPN is needed in Switzerland:** some Swiss ISPs block `*.polymarket.com` via DNS, so the pipeline resolves the two API hosts through DNS-over-HTTPS (Cloudflare `1.1.1.1`) itself (see [Known limitations](#11-known-limitations)). A plain `curl` to the API may therefore fail on your host while the pipeline works.
+### 9.1 Prerequisites
 
-No API keys or cloud credentials are needed for the midterm.
+Make sure that you have:
 
-### Run
+- Docker Desktop (macOS, or Windows with WSL2), or Docker Engine with Compose v2.
+- Approximately 4 GB of free RAM.
+- Free ports **8080** (Kestra) and **5433** (PostgreSQL). You can change these ports in `.env`.
+- An internet connection.
 
-```bash
-git clone <repo-url> && cd deng
-cp .env.example .env              # optional: change the passwords in .env
-docker compose up -d --build
-```
+You do not need:
 
-This builds the pipeline image `deng-pipeline:latest`, starts PostgreSQL, creates the schemas once (`pipeline` service, exits with code 0), and starts Kestra with the flow from `orchestration/flows/` loaded.
+- API keys or cloud credentials.
+- A VPN in Switzerland. The pipeline gets around the Swiss DNS block itself (see [Known limitations](#11-known-limitations)).
 
-1. Open **http://localhost:8080** and log in with `KESTRA_USER` / `KESTRA_PASSWORD` from `.env` (default `admin@kestra.io` / `ChangeMe123`). If the page shows `404 page not found`, another program uses port 8080: set `KESTRA_HOST_PORT=8088` in `.env`, run `docker compose up -d`, and open http://localhost:8088.
-2. Go to **Flows → `deng.polymarket` / `polymarket_pipeline`** and click **Execute** with both inputs empty. (The schedule only runs daily at 02:00 UTC, so start the first run by hand.)
-3. The **first execution is the 30-day backfill** and takes about 6–8 minutes (most of it is ~1,000 price-history requests). Every later execution (manual or the daily schedule) is incremental and takes about 10–20 seconds.
-4. All four tasks should end in `SUCCESS`. The `dq_check` log lists every check as `PASS` or `WARN`.
+> **Note:** In Switzerland, `curl` to the Polymarket API can fail on your computer. The pipeline still works. This is expected.
+
+### 9.2 Start the environment
+
+1. Clone the repository:
+   ```bash
+   git clone <repo-url>
+   cd deng
+   ```
+2. Make the configuration file:
+   ```bash
+   cp .env.example .env
+   ```
+   You can change the passwords in `.env`. This is optional.
+3. Build and start all services:
+   ```bash
+   docker compose up -d --build
+   ```
+   **Result:** Docker builds the image `deng-pipeline:latest` and starts PostgreSQL and Kestra. The `pipeline` service creates the database schemas and stops with exit code 0. This is correct.
+4. Wait approximately 30 seconds. Kestra must start completely.
+
+### 9.3 Run the pipeline
+
+1. Open **http://localhost:8080** in a browser.
+   **Result:** The Kestra login page opens.
+   > **Note:** If the page shows `404 page not found`, another program uses port 8080. Do the steps in [Troubleshooting](#99-troubleshooting).
+2. Log in with the values from `.env`:
+   - Email: `KESTRA_USER` (default `admin@kestra.io`)
+   - Password: `KESTRA_PASSWORD` (default `ChangeMe123`)
+3. In the left menu, click **Flows**.
+4. Click the flow **`polymarket_pipeline`** (namespace `deng.polymarket`).
+5. Click **Execute**.
+6. Keep the two inputs `window_start` and `window_end` empty.
+7. Click **Execute** again.
+   **Result:** The first execution starts. This execution is the 30-day backfill.
+8. Wait 6 to 8 minutes.
+   > **Note:** Most of this time is approximately 1,000 price-history requests. Later executions are incremental and take 10 to 20 seconds.
+9. Make sure that all 4 tasks show `SUCCESS`:
+   `ingest_markets` → `ingest_prices` → `transform` → `dq_check`
+10. Optional: Open the **Logs** tab of `dq_check`.
+    **Result:** Each check shows `PASS` or `WARN`. No check shows `FAIL`.
+
+> **Note:** The schedule runs the pipeline each day at 02:00 UTC. For this reason, you must start the first execution manually.
 
 ![Successful 30-day backfill in Kestra (2026-10-24): ingest_markets 4m 11s, ingest_prices 3m 13s, transform 1.7s, dq_check 1.5s, total 7m 28s](docs/screenshots/kestra-execution.png)
 
 *Reference run, 2026-10-24: first execution (30-day backfill), all 4 tasks succeeded in 7 m 28 s. Task order top to bottom: `ingest_markets`, `ingest_prices`, `transform`, `dq_check`.*
 
-### Rerun and backfill
+### 9.4 Rerun or backfill a time window
 
-- **Rerun / backfill a window:** in Kestra, **Execute** the flow with `window_start` and `window_end` set, e.g. `2026-10-01T00:00:00Z` → `2026-10-02T00:00:00Z`. Markets closed in that window are re-read, their price histories are refetched, and the marts are rebuilt. Because every write is an upsert/replace, a rerun gives the same row counts (see check 5 below).
-- **Failed execution:** use **Restart** in the Kestra UI (reruns the failed task), or just wait: the next scheduled run starts from the last successful watermark and fetches missing price histories.
-- **Without Kestra** (same image, same commands):
-  ```bash
-  docker compose run --rm pipeline python -m polymarket_pipeline ingest-markets --start 2026-10-01 --end 2026-10-02
-  docker compose run --rm pipeline python -m polymarket_pipeline ingest-prices  --start 2026-10-01 --end 2026-10-02
-  docker compose run --rm pipeline python -m polymarket_pipeline transform
-  docker compose run --rm pipeline python -m polymarket_pipeline dq-check
-  ```
+1. In Kestra, open the flow **`polymarket_pipeline`**.
+2. Click **Execute**.
+3. Set `window_start`. Example: `2026-10-10T00:00:00Z`.
+4. Set `window_end`. Example: `2026-10-12T00:00:00Z`.
+5. Click **Execute** again.
+   **Result:** The pipeline reads the markets that closed in this window again. It gets their price histories again and rebuilds the marts.
+6. Do query 5 in [9.7](#97-verify-the-data) before and after the rerun.
+   **Result:** The row counts are the same. Each write is an upsert or a replace, so a rerun does not make duplicates.
 
-### Verification queries
+### 9.5 Recover a failed execution
 
-Open a SQL shell: `docker compose exec postgres psql -U polymarket -d polymarket` (or connect any SQL client to `localhost:5433` with the credentials from `.env`).
+Do one of these steps:
+
+- In the Kestra execution, click **Restart**. Kestra runs the failed task again.
+- Wait for the next scheduled run. It starts from the last successful watermark and gets the missing price histories.
+
+### 9.6 Run the steps without Kestra (optional)
+
+You can run each step manually. The steps use the same image and the same commands as Kestra:
+
+```bash
+docker compose run --rm pipeline python -m polymarket_pipeline ingest-markets --start 2026-10-10 --end 2026-10-12
+docker compose run --rm pipeline python -m polymarket_pipeline ingest-prices  --start 2026-10-10 --end 2026-10-12
+docker compose run --rm pipeline python -m polymarket_pipeline transform
+docker compose run --rm pipeline python -m polymarket_pipeline dq-check
+```
+
+### 9.7 Verify the data
+
+1. Open a SQL shell:
+   ```bash
+   docker compose exec postgres psql -U polymarket -d polymarket
+   ```
+   > **Note:** You can also use a SQL client. Connect it to `localhost:5433` with the credentials from `.env`.
+2. Do the 7 queries below. Compare each result with the expected result in the comment.
 
 ```sql
 -- 1. Run log: one row per step and execution, newest first. Expect status = success.
@@ -298,37 +357,45 @@ select prob_bucket, market_count, mean_implied_prob, observed_frequency, calibra
  where category = 'all' and horizon_days = 7 order by prob_bucket;
 ```
 
-Exact numbers depend on the day the backfill runs. Our two reference runs:
+The numbers change with the day of the backfill. Our two reference runs:
 
 | Run date | Duration | Raw markets | In scope | Snapshot rows | Error checks | Rerun 10.10 → 12.10 |
 |---|---|---|---|---|---|---|
 | 2026-10-20 | ~6 min | 7,363 | 1,037 | 3,075 | all `PASS` | counts unchanged |
 | 2026-10-24 (macOS) | ~7.5 min | 8,734 | 919 | 2,719 | all `PASS` | counts unchanged |
 
-### Stop and reset
+### 9.8 Run the unit tests
 
-```bash
-docker compose down        # stop, keep the data
-docker compose down -v     # stop and delete all data (next start backfills again)
-```
+1. Run this command:
+   ```bash
+   docker compose run --rm -u root pipeline sh -c "pip install -q pytest && PYTHONPATH=/app python -m pytest /app/tests"
+   ```
+   **Result:** `12 passed`.
 
-### Unit tests
+> **Note:** You can also run the tests locally with Python 3.12:
+> `pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest`
 
-```bash
-docker compose run --rm -u root pipeline sh -c "pip install -q pytest && PYTHONPATH=/app python -m pytest /app/tests"
-```
+### 9.9 Troubleshooting
 
-Or locally with Python 3.12: `pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest`.
-
-### Troubleshooting
-
-| Symptom | Fix |
+| If | Then |
 |---|---|
-| Kestra task fails with `No such image: deng-pipeline:latest` | `docker compose build pipeline` |
-| `port is already allocated` | change `KESTRA_HOST_PORT` / `PG_HOST_PORT` in `.env` |
-| Kestra page shows `404 page not found` | port 8080 is used by another program; set `KESTRA_HOST_PORT=8088` in `.env` and run `docker compose up -d` |
-| `ingest_markets` fails with connection timeouts | check that outbound HTTPS to `1.1.1.1` is allowed (DoH); otherwise set `DOH_URL=` (empty) in `.env` and use a VPN |
-| Flow changes in `orchestration/flows/` are not visible | `docker compose restart kestra` (flows are loaded at startup) |
+| A Kestra task shows `No such image: deng-pipeline:latest` | Run `docker compose build pipeline`. |
+| Docker shows `port is already allocated` | Change `KESTRA_HOST_PORT` or `PG_HOST_PORT` in `.env`. Run `docker compose up -d`. |
+| The Kestra page shows `404 page not found` | Another program uses port 8080. Set `KESTRA_HOST_PORT=8088` in `.env`. Run `docker compose up -d`. Open http://localhost:8088. |
+| `ingest_markets` shows connection timeouts | Make sure that your network allows HTTPS to `1.1.1.1`. If it does not, set `DOH_URL=` (empty) in `.env` and use a VPN. |
+| Kestra does not show a change in `orchestration/flows/` | Run `docker compose restart kestra`. Kestra reads the flows only when it starts. |
+
+### 9.10 Stop or reset
+
+- To stop and keep the data:
+  ```bash
+  docker compose down
+  ```
+- To stop and delete all data:
+  ```bash
+  docker compose down -v
+  ```
+  > **Caution:** This deletes all data. The next start does the 30-day backfill again.
 
 ---
 
