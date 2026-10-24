@@ -242,6 +242,10 @@ This builds the pipeline image `deng-pipeline:latest`, starts PostgreSQL, create
 3. The **first execution is the 30-day backfill** and takes about 5–7 minutes (most of it is ~1,040 price-history requests). Every later execution (manual or the daily schedule) is incremental and takes about 10–20 seconds.
 4. All four tasks should end in `SUCCESS`. The `dq_check` log lists every check as `PASS` or `WARN`.
 
+![Successful 30-day backfill in Kestra (2026-10-24): ingest_markets 4m 11s, ingest_prices 3m 13s, transform 1.7s, dq_check 1.5s, total 7m 28s](docs/screenshots/kestra-execution.png)
+
+*Reference run, 2026-10-24: first execution (30-day backfill), all 4 tasks succeeded in 7 m 28 s. Task order top to bottom: `ingest_markets`, `ingest_prices`, `transform`, `dq_check`.*
+
 ### Rerun and backfill
 
 - **Rerun / backfill a window:** in Kestra, **Execute** the flow with `window_start` and `window_end` set, e.g. `2026-10-01T00:00:00Z` → `2026-10-02T00:00:00Z`. Markets closed in that window are re-read, their price histories are refetched, and the marts are rebuilt. Because every write is an upsert/replace, a rerun gives the same row counts (see check 5 below).
