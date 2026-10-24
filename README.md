@@ -37,7 +37,7 @@ A perfectly calibrated market has observed outcome frequencies equal to its impl
 | **CLOB API** | `https://clob.polymarket.com`: historical price series per outcome token (`/prices-history?market=<token_id>&interval=max&fidelity=1440`) |
 | **Format** | JSON. Some fields (`outcomes`, `outcomePrices`, `clobTokenIds`) are JSON-encoded strings inside JSON. |
 | **Update frequency** | Markets resolve continuously. We only need **closed** markets, so a **daily** batch is sufficient. |
-| **Volume (estimate)** | Thousands of closed markets per year. After filtering, we expect a few thousand markets × ~30 to 365 daily price points, which is low millions of rows at most. |
+| **Volume (measured)** | A 30-day backfill (closed 2026-09-24 → 2026-10-24, measured 2026-10-24) loads **~8,700 closed markets** (≈ 290 per day, after the API pre-filter on volume ≥ $10k and start date), of which **~920 are in scope**. Their price histories hold **~97,000 daily price points** (≈ 106 per market), which give **~2,700 snapshot rows**. The whole PostgreSQL database is about **50 MB**. Extrapolated to 12 months: ~100k raw markets, ~11k in scope, ~1.2M price points, which is still small. |
 | **Licence / terms** | Public data. We respect rate limits and do not redistribute raw dumps in this repo. |
 
 ### Example records
@@ -146,7 +146,7 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | Raw landing | JSONB partitioned by load date | JSONB keyed by `market_id` (upsert), plus `run_id` and `ingested_at` | Idempotency through the natural key is simpler in PostgreSQL; load-date partitioning returns with GCS in the final |
 | Scope filtering | in the ingestion script | coarse pre-filter in the API call (volume, start date); exact rules in `staging.stg_markets` with an `exclusion_reason` | One place for the rules, raw keeps everything (re-filtering needs no re-download), exclusions are explainable |
 | Category scope | mainly politics, crypto, economics; `other` as catch-all | **only** politics, crypto, economics; `other` excluded (`out_of_scope_category`) | Team decision: keeps the analysis focused on the three categories of the research questions; costs ~16% of the markets (mostly AI/tech) |
-| Transformation | SQL / dbt | plain SQL files, executed by the pipeline image; full rebuild of marts in one transaction | Data is small (~3,100 snapshot rows); dbt is planned for BigQuery |
+| Transformation | SQL / dbt | plain SQL files, executed by the pipeline image; full rebuild of marts in one transaction | Data is small (~2,700–3,100 snapshot rows); dbt is planned for BigQuery |
 | Data quality | planned for the final | `marts.dq_results` view (error / warn), checked as the last task | Cheap to add now and it protects the core table |
 
 ### Ingestion design
@@ -269,7 +269,7 @@ select (select count(*) from raw.markets) as markets, (select count(*) from raw.
 -- 3. Scope decisions. Expect in_scope (exclusion_reason null) ~1,000; the rest excluded with a reason.
 select coalesce(exclusion_reason, '(in scope)') as reason, count(*) from staging.stg_markets group by 1 order by 2 desc;
 
--- 4. Core table: rows per category (politics, economics, crypto) and horizon (~3,100 rows in total).
+-- 4. Core table: rows per category (politics, economics, crypto) and horizon (~2,700–3,100 rows in total).
 select category, horizon_days, count(*) from marts.fct_market_snapshot group by 1, 2 order by 1, 2;
 
 -- 5. Grain / idempotency: both numbers must be equal, before and after a rerun.
@@ -284,7 +284,7 @@ select prob_bucket, market_count, mean_implied_prob, observed_frequency, calibra
  where category = 'all' and horizon_days = 7 order by prob_bucket;
 ```
 
-Exact numbers depend on the day the backfill runs. Reference (2026-10-20): the backfill took about 6 minutes; 7,363 raw markets, 1,037 in scope, 3,075 snapshot rows (767 politics, 205 economics, 64 crypto markets), all error checks `PASS`. A rerun of the window 2026-10-10 → 2026-10-12 left all counts unchanged.
+Exact numbers depend on the day the backfill runs. Reference (2026-10-20): the backfill took about 6 minutes; 7,363 raw markets, 1,037 in scope, 3,075 snapshot rows (767 politics, 205 economics, 64 crypto markets), all error checks `PASS`. A rerun of the window 2026-10-10 → 2026-10-12 left all counts unchanged. Second reference (2026-10-24, macOS): about 7 minutes; 8,734 raw markets, 919 in scope, 919 price histories (96,991 price points), 2,719 snapshot rows (~640 politics, 215 economics, 63 crypto markets), all error checks `PASS`; a rerun of 2026-10-10 → 2026-10-12 again left all counts unchanged.
 
 ### Stop and reset
 
