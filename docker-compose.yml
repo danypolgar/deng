@@ -1,73 +1,133 @@
+# Local midterm stack: PostgreSQL (pipeline data), pipeline image + one-shot schema init,
+# Kestra (orchestrator) with its own PostgreSQL.
+#
+#   docker compose up -d --build        start everything
+#   docker compose run --rm test        unit + SQL integration tests (profile "test")
+#
+# Images are pinned by digest (multi-arch index) so every reviewer runs the same bits.
+# Update a digest: docker buildx imagetools inspect <image:tag>
+
 name: deng
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-postgres-healthcheck: &pg-healthcheck
+  test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+  interval: 5s
+  timeout: 5s
+  retries: 20
+  start_period: 10s
+
+# Connection settings for every container that runs the pipeline code. Only these values are
+# passed in (not the whole .env), so the containers never see the Kestra credentials.
+x-pipeline-env: &pipeline-env
+  PG_HOST: postgres
+  PG_PORT: "5432"
+  PG_DATABASE: ${PG_DATABASE:?set PG_DATABASE in .env (cp .env.example .env)}
+  PG_USER: ${PG_USER:?set PG_USER in .env}
+  PG_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+  DOH_URL: ${DOH_URL-https://1.1.1.1/dns-query}
 
 services:
 
   postgres:
-    image: postgres:17.6
+    image: postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ${PG_DATABASE}
-      POSTGRES_USER: ${PG_USER}
-      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DATABASE:?set PG_DATABASE in .env}
+      POSTGRES_USER: ${PG_USER:?set PG_USER in .env}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+    # Bound to localhost only: reachable from the host's SQL client, not from the network.
     ports:
-      - "${PG_HOST_PORT:-5433}:5432"
+      - "127.0.0.1:${PG_HOST_PORT:-5433}:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
+    healthcheck: *pg-healthcheck
+    stop_grace_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    logging: *default-logging
     networks: [deng-net]
 
+  # Builds deng-pipeline:latest (used by every Kestra task) and creates the schemas once.
   pipeline:
     build:
       context: .
       dockerfile: ingestion/Dockerfile
+      target: runtime
     image: deng-pipeline:latest
     command: ["python", "-m", "polymarket_pipeline", "init-db"]
-    env_file: .env
-    environment:
-      PG_HOST: postgres
-      PG_PORT: "5432"
+    environment: *pipeline-env
     depends_on:
       postgres:
         condition: service_healthy
     restart: "no"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging: *default-logging
+    networks: [deng-net]
+
+  # Test image: runtime + pytest + tests. Not started by `up`; run with `docker compose run --rm test`.
+  test:
+    profiles: [test]
+    build:
+      context: .
+      dockerfile: ingestion/Dockerfile
+      target: test
+    image: deng-pipeline-test:latest
+    environment: *pipeline-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     networks: [deng-net]
 
   kestra-postgres:
-    image: postgres:17.6
+    image: postgres:17.6@sha256:00bc86618629af00d2937fdc5a5d63db3ff8450acf52f0636ec813c7f4902929
+    restart: unless-stopped
     environment:
       POSTGRES_DB: kestra
       POSTGRES_USER: kestra
-      POSTGRES_PASSWORD: ${KESTRA_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${KESTRA_DB_PASSWORD:?set KESTRA_DB_PASSWORD in .env}
     volumes:
       - kestra-pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks: [deng-net]
+    healthcheck: *pg-healthcheck
+    stop_grace_period: 30s
+    security_opt: ["no-new-privileges:true"]
+    logging: *default-logging
+    # Kestra's metadata DB is only reachable by Kestra, not by the pipeline containers.
+    networks: [kestra-internal]
 
   kestra:
-    image: kestra/kestra:v2.0.4
+    image: kestra/kestra:v2.0.4@sha256:3db5e0110babe75bdf6d9e5f030e1df9f7da2a148c47b5197ba233f3f0d6e8f5
+    restart: unless-stopped
+    # Root is needed to use the Docker socket (Docker task runner). See README "Known limitations".
     user: "root"
     command: server standalone --flow-path /app/project-flows --no-tutorials
     stop_grace_period: 2m
     ports:
-      - "${KESTRA_HOST_PORT:-8080}:8080"
+      - "127.0.0.1:${KESTRA_HOST_PORT:-8080}:8080"
     volumes:
       - kestra-data:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
+      # Same path on host and in the container: the Docker task runner mounts task working
+      # directories from here into the task containers.
       - /tmp/kestra-wd:/tmp/kestra-wd
       - ./orchestration/flows:/app/project-flows:ro
     environment:
       ENV_PG_HOST: postgres
       ENV_PG_PORT: "5432"
-      ENV_PG_DATABASE: ${PG_DATABASE}
-      ENV_PG_USER: ${PG_USER}
-      ENV_PG_PASSWORD: ${PG_PASSWORD}
+      ENV_PG_DATABASE: ${PG_DATABASE:?set PG_DATABASE in .env}
+      ENV_PG_USER: ${PG_USER:?set PG_USER in .env}
+      ENV_PG_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
       ENV_LOOKBACK_DAYS: ${LOOKBACK_DAYS:-30}
       ENV_OVERLAP_MINUTES: ${OVERLAP_MINUTES:-15}
       ENV_CLOB_WORKERS: ${CLOB_WORKERS:-4}
@@ -79,12 +139,12 @@ services:
             url: jdbc:postgresql://kestra-postgres:5432/kestra
             driverClassName: org.postgresql.Driver
             username: kestra
-            password: ${KESTRA_DB_PASSWORD}
+            password: ${KESTRA_DB_PASSWORD:?set KESTRA_DB_PASSWORD in .env}
         kestra:
           server:
             basic-auth:
-              username: ${KESTRA_USER}
-              password: ${KESTRA_PASSWORD}
+              username: ${KESTRA_USER:?set KESTRA_USER in .env}
+              password: ${KESTRA_PASSWORD:?set KESTRA_PASSWORD in .env}
           repository:
             type: postgres
           queue:
@@ -97,16 +157,28 @@ services:
             tmp-dir:
               path: /tmp/kestra-wd/tmp
           url: http://localhost:8080/
+    healthcheck:
+      # Management port 8081 (not published): UP once the server and its DB are ready.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
     depends_on:
       kestra-postgres:
         condition: service_healthy
       pipeline:
         condition: service_completed_successfully
-    networks: [deng-net]
+    security_opt: ["no-new-privileges:true"]
+    logging: *default-logging
+    networks: [deng-net, kestra-internal]
 
 networks:
+  # Fixed name: the Kestra flow attaches task containers to it (networkMode: deng-net).
   deng-net:
     name: deng-net
+  kestra-internal:
+    internal: true
 
 volumes:
   pg-data:
