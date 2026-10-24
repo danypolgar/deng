@@ -6,14 +6,13 @@
 #   test              : runtime + pytest + tests, used by `docker compose run --rm test`
 #
 # Base image pinned by digest (multi-arch index: works on arm64 Macs and amd64 CI).
+# Written out in each FROM (not an ARG) so hadolint and Dependabot can read the pin.
 # Update: docker buildx imagetools inspect python:3.12-slim
-
-ARG PYTHON_IMAGE=python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
 
 # ---------------------------------------------------------------------------- build ----
 # Install the dependencies into a virtualenv. Only the venv is copied to the runtime stage,
 # so pip caches and build files never reach the final image.
-FROM ${PYTHON_IMAGE} AS build
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS build
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -26,7 +25,7 @@ RUN /usr/local/bin/python -m pip --python /opt/venv/bin/python install --no-deps
  && /usr/local/bin/python -m pip --python /opt/venv/bin/python check
 
 # -------------------------------------------------------------------------- runtime ----
-FROM ${PYTHON_IMAGE} AS runtime
+FROM python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime
 
 LABEL org.opencontainers.image.title="deng-pipeline" \
       org.opencontainers.image.description="Polymarket calibration pipeline (DENG HS26, Team 04)" \

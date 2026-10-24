@@ -40,11 +40,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: cp .env.example .env
       - name: Lint Dockerfile (hadolint)
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: ingestion/Dockerfile
-      - run: cp .env.example .env
       - run: docker compose config --quiet
       - run: docker compose build pipeline
       - name: CLI starts inside the image
