@@ -1,0 +1,39 @@
+%% Architecture: Polymarket Calibration Pipeline
+%% Solid = implemented (midterm, local). Dashed = planned for the final (GCP).
+%% Render: npx pele / Pele render() -> docs/architecture.svg
+flowchart LR
+  subgraph SRC[Polymarket public APIs]
+    gamma[Gamma API<br/>/markets/keyset]
+    clob[CLOB API<br/>/prices-history]
+  end
+
+  subgraph DC[Docker Compose]
+    subgraph K[Kestra: daily 02:00 UTC · retries · backfill inputs]
+      t1[ingest_markets] --> t2[ingest_prices] --> t3[transform] --> t4[dq_check]
+    end
+    subgraph PG[PostgreSQL]
+      raw[(raw<br/>markets · price_history<br/>ingestion_log)]
+      stg[(staging<br/>stg_markets · stg_price_history)]
+      marts[(marts<br/>fct_market_snapshot<br/>mart_calibration_summary<br/>dq_results)]
+    end
+  end
+
+  subgraph GCP[Google Cloud, final · Terraform]
+    gcs[(GCS data lake<br/>raw JSON / load_date)]
+    bq[(BigQuery<br/>dbt models)]
+  end
+
+  analyst([Analyst<br/>calibration / ML])
+
+  gamma --> t1
+  clob --> t2
+  t1 --> raw
+  t2 --> raw
+  raw --> stg --> marts
+  t3 --> marts
+  t4 -.-> marts
+  marts --> analyst
+
+  K -.-> gcs
+  gcs -.-> bq
+  bq -.-> analyst

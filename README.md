@@ -94,44 +94,15 @@ CLOB `/prices-history`:
 
 ---
 
-## 4. Architecture v0.1
+## 4. Architecture
 
-```mermaid
-flowchart LR
-    subgraph SRC[Source: Polymarket public APIs]
-        G[Gamma API<br/>markets & events]
-        C[CLOB API<br/>price history]
-    end
+![Architecture: Polymarket calibration pipeline](docs/architecture.svg)
 
-    subgraph ORCH[Orchestrator: Kestra<br/>daily schedule · retries · backfills]
-        I1[Ingest markets<br/>Python]
-        I2[Ingest price history<br/>Python]
-        T[Transform<br/>SQL / dbt]
-        Q[Data-quality checks]
-    end
+Solid = implemented (midterm, local Docker Compose). Dashed = planned for the final (GCP). Source: [`docs/architecture.mmd`](docs/architecture.mmd), rendered to SVG with [Pele](https://github.com/kepano/pele).
 
-    subgraph LOCAL[Local dev: Docker Compose]
-        PG[(PostgreSQL<br/>raw + staging + marts)]
-    end
+### Original plan (v0.1)
 
-    subgraph GCP[Google Cloud: Terraform]
-        GCS[(GCS data lake<br/>raw JSON, partitioned by load date)]
-        BQ[(BigQuery<br/>staging → dims/facts → marts)]
-    end
-
-    U[Analyst<br/>calibration research / ML]
-
-    G --> I1
-    C --> I2
-    I1 --> GCS
-    I2 --> GCS
-    I1 -. midterm .-> PG
-    I2 -. midterm .-> PG
-    GCS --> T --> BQ
-    PG -. midterm .-> T
-    T --> Q
-    BQ --> U
-```
+The implemented midterm version and how it differs from this plan are described in [section 5](#5-midterm-implementation-v02).
 
 **Pipeline steps**
 1. **Ingest markets:** page through Gamma `/markets` for closed markets in the load window, apply scope filters, and write the raw JSON pages.
@@ -160,39 +131,7 @@ flowchart LR
 
 ---
 
-## 5. Architecture v0.2 (midterm)
-
-```mermaid
-flowchart LR
-    subgraph SRC[Source: Polymarket public APIs]
-        G[Gamma API<br/>/markets/keyset]
-        C[CLOB API<br/>/prices-history]
-    end
-
-    subgraph DC[Docker Compose · network deng-net]
-        subgraph K[Kestra · daily 02:00 UTC · retries · backfill inputs]
-            direction LR
-            T1[ingest_markets] --> T2[ingest_prices] --> T3[transform] --> T4[dq_check]
-        end
-        subgraph PG[PostgreSQL · database polymarket]
-            R[(raw<br/>markets · price_history<br/>ingestion_log)]
-            S[(staging<br/>stg_markets · stg_price_history<br/>tag_category)]
-            M[(marts<br/>fct_market_snapshot<br/>mart_calibration_summary<br/>dq_results)]
-        end
-        KDB[(Kestra metadata DB)]
-    end
-
-    U[Analyst<br/>SQL client on localhost:5433]
-
-    G --> T1 -->|upsert JSONB| R
-    C --> T2 -->|replace per market| R
-    R --> S
-    T3 -->|rebuild in 1 transaction| M
-    S --> M
-    T4 -. reads .-> M
-    K --- KDB
-    M --> U
-```
+## 5. Midterm implementation (v0.2)
 
 Every Kestra task starts a container from the same image, `deng-pipeline:latest` (Kestra **Docker task runner**), and runs one CLI command: `python -m polymarket_pipeline <ingest-markets|ingest-prices|transform|dq-check>`. The same commands can be run by hand with `docker compose run`, which makes each step testable without the orchestrator.
 
