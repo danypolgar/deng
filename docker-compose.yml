@@ -72,6 +72,7 @@ services:
       ENV_OVERLAP_MINUTES: ${OVERLAP_MINUTES:-15}
       ENV_CLOB_WORKERS: ${CLOB_WORKERS:-4}
       ENV_REQUEST_INTERVAL_SECONDS: ${REQUEST_INTERVAL_SECONDS:-0.15}
+      ENV_DOH_URL: ${DOH_URL-https://1.1.1.1/dns-query}
       KESTRA_CONFIGURATION: |
         datasources:
           postgres:

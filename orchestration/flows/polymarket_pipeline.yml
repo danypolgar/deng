@@ -49,6 +49,7 @@ tasks:
       OVERLAP_MINUTES: "{{ envs.overlap_minutes }}"
       CLOB_WORKERS: "{{ envs.clob_workers }}"
       REQUEST_INTERVAL_SECONDS: "{{ envs.request_interval_seconds }}"
+      DOH_URL: "{{ envs.doh_url ?? '' }}"
       RUN_ID: "{{ execution.id }}"
     timeout: PT1H
     retry:
@@ -75,6 +76,7 @@ tasks:
       PG_PASSWORD: "{{ envs.pg_password }}"
       CLOB_WORKERS: "{{ envs.clob_workers }}"
       REQUEST_INTERVAL_SECONDS: "{{ envs.request_interval_seconds }}"
+      DOH_URL: "{{ envs.doh_url ?? '' }}"
       RUN_ID: "{{ execution.id }}"
     timeout: PT1H
     retry:

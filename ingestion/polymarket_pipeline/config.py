@@ -26,6 +26,9 @@ class Settings:
     )
     clob_workers: int = field(default_factory=lambda: int(_env("CLOB_WORKERS", "4")))
 
+    # DNS-over-HTTPS for the API hosts (works around Swiss ISP DNS blocks). Empty DOH_URL = off.
+    doh_url: str = field(default_factory=lambda: os.environ.get("DOH_URL", "https://1.1.1.1/dns-query").strip())
+
     lookback_days: int = field(default_factory=lambda: int(_env("LOOKBACK_DAYS", "30")))
     overlap_minutes: int = field(default_factory=lambda: int(_env("OVERLAP_MINUTES", "15")))
 

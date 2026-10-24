@@ -3,8 +3,9 @@ import logging
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
-from . import clob, db, gamma
+from . import clob, db, doh, gamma
 from .config import Settings
 from .http_client import ThrottledSession
 
@@ -159,7 +160,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stdout)
     args = build_parser().parse_args(argv)
-    return args.func(Settings(), args)
+    settings = Settings()
+    if settings.doh_url:
+        hosts = {urlparse(u).hostname for u in (settings.gamma_base_url, settings.clob_base_url)}
+        doh.install({h.lower() for h in hosts if h}, settings.doh_url)
+    return args.func(settings, args)
 
 
 if __name__ == "__main__":

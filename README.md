@@ -214,7 +214,7 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 
 | Concern | Implementation |
 |---|---|
-| **Modularity** | `http_client.py` (throttling, retries), `gamma.py` (markets), `clob.py` (prices), `db.py` (all SQL access), `cli.py` (commands) |
+| **Modularity** | `http_client.py` (throttling, retries), `doh.py` (DNS-over-HTTPS for the API hosts), `gamma.py` (markets), `clob.py` (prices), `db.py` (all SQL access), `cli.py` (commands) |
 | **Full vs. incremental** | Incremental by default. The first run has no watermark and therefore backfills `LOOKBACK_DAYS`. Closed markets do not change, so a full reload is never needed. |
 | **Load window** | `ingest-markets` loads markets with `window_start ≤ closedTime < window_end`, paging newest-first and stopping at the first page older than the window. |
 | **Idempotency** | `raw.markets` upserts on `market_id`; `raw.price_history` replaces one row per market; marts are rebuilt from staging. Running the same window twice gives the same tables. |
@@ -284,7 +284,7 @@ Partitioning and clustering (final): `fct_price_daily` is partitioned by `price_
 
 - Docker Desktop (macOS/Windows with WSL2) or Docker Engine with Compose v2. Kestra needs access to the Docker socket (`/var/run/docker.sock`).
 - About 4 GB of free RAM; ports **8080** (Kestra) and **5433** (PostgreSQL) free, or change them in `.env`.
-- Internet access to `gamma-api.polymarket.com` and `clob.polymarket.com`. Check it: `curl -s -o /dev/null -w "%{http_code}\n" "https://gamma-api.polymarket.com/markets?limit=1"` must print `200` (see [Known limitations](#11-known-limitations)).
+- Internet access. **No VPN is needed in Switzerland:** some Swiss ISPs block `*.polymarket.com` via DNS, so the pipeline resolves the two API hosts through DNS-over-HTTPS (Cloudflare `1.1.1.1`) itself (see [Known limitations](#11-known-limitations)). A plain `curl` to the API may therefore fail on your host while the pipeline works.
 
 No API keys or cloud credentials are needed for the midterm.
 
@@ -360,7 +360,7 @@ docker compose down -v     # stop and delete all data (next start backfills agai
 |---|---|
 | Kestra task fails with `No such image: deng-pipeline:latest` | `docker compose build pipeline` |
 | `port is already allocated` | change `KESTRA_HOST_PORT` / `PG_HOST_PORT` in `.env` |
-| `ingest_markets` fails with connection timeouts | check API access (see Prerequisites) |
+| `ingest_markets` fails with connection timeouts | check that outbound HTTPS to `1.1.1.1` is allowed (DoH); otherwise set `DOH_URL=` (empty) in `.env` and use a VPN |
 | Flow changes in `orchestration/flows/` are not visible | `docker compose restart kestra` (flows are loaded at startup) |
 
 ---
@@ -380,10 +380,11 @@ docker compose down -v     # stop and delete all data (next start backfills agai
 │   │   ├── cli.py              # commands, load-window logic
 │   │   ├── config.py           # settings from environment variables
 │   │   ├── http_client.py      # throttled session with retries
+│   │   ├── doh.py              # DNS-over-HTTPS for the API hosts (Swiss DNS block)
 │   │   ├── gamma.py            # Gamma API: closed markets (keyset paging)
 │   │   ├── clob.py             # CLOB API: price history
 │   │   └── db.py               # PostgreSQL access
-│   └── tests/
+│   └── tests/                  # pytest: docker compose run --rm -u root pipeline sh -c "pip install -q pytest && PYTHONPATH=/app python -m pytest" (or locally: pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest)
 ├── transformations/sql/
 │   ├── 00_raw.sql              # schemas, raw tables, ingestion log
 │   ├── 10_staging.sql          # tag → category map, staging views, scope rules
@@ -397,7 +398,7 @@ docker compose down -v     # stop and delete all data (next start backfills agai
 
 ## 11. Known limitations
 
-- **Access from Switzerland:** some Swiss ISPs resolve `*.polymarket.com` to a block page (DNS block under the Swiss Gambling Act), and the ingestion then fails with timeouts. The pipeline itself has no workaround for this. Check access as described in [Prerequisites](#prerequisites).
+- **Access from Switzerland:** Swiss ISPs (e.g. Swisscom) answer DNS queries for `*.polymarket.com` with a block page address (Swiss Gambling Act). The pipeline works around this without a VPN: `doh.py` resolves only the two API hosts through DNS-over-HTTPS (`DOH_URL`, default `https://1.1.1.1/dns-query`, contacted by IP). TLS still verifies the real `polymarket.com` certificate. If DoH is unreachable, the system resolver is used. Tested with a container forced onto Swisscom DNS (`--dns 195.186.1.111`): without DoH the host resolves to the block page, with DoH the API answers. Set `DOH_URL=` (empty) to disable.
 - **Single platform:** markets are one platform's view (Polymarket only). Results may not generalise to other prediction markets.
 - **Daily prices:** calibration is measured on daily prices (`fidelity=1440`), not intraday prices.
 - **Close vs. resolution:** horizons are measured from `closedTime`. Many markets are effectively decided before they close (prices already near 0 or 1), so the 1-day horizon looks very well calibrated; the 7- and 30-day horizons are more informative.
