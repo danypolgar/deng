@@ -11,6 +11,7 @@ COPY ingestion/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ingestion/polymarket_pipeline ./polymarket_pipeline
+COPY ingestion/tests ./tests
 COPY transformations/sql ./sql
 
 RUN useradd --create-home --uid 10001 pipeline
