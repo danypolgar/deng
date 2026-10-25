@@ -49,7 +49,7 @@ jobs:
       - run: docker compose build pipeline
       - name: CLI starts inside the image
         run: docker run --rm deng-pipeline:latest python -m polymarket_pipeline --help
-      - name: Tests in the compose stack (same command as README 9.8)
+      - name: Tests in the compose stack (same command as README 7.8)
         run: docker compose run --rm test
       - if: always()
         run: docker compose --profile test down -v

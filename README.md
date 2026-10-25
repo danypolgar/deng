@@ -6,9 +6,9 @@
 
 An end-to-end batch data pipeline that ingests resolved Polymarket prediction markets and their price history and builds curated tables for **calibration research**. The midterm version runs locally (Docker Compose, Kestra, PostgreSQL). The final version moves storage and transformations to Google Cloud (GCS, BigQuery).
 
-**Reviewers:** go straight to [9. Setup and verification](#9-setup-and-verification). A full run takes about 15 minutes and needs only Docker.
+**Reviewers:** go straight to [7. Setup and verification](#7-setup-and-verification). A full run takes about 15 minutes and needs only Docker.
 
-**Contents:** [1. Use case](#1-problem-and-use-case) · [2. Data source](#2-data-source) · [3. Scope](#3-scope) · [4. Architecture v0.1](#4-architecture-v01-initial-plan) · [5. Architecture v0.2](#5-architecture-v02-midterm) · [6. Data model](#6-data-model) · [7. Plan](#7-project-plan--backlog) · [8. Challenges](#8-anticipated-challenges) · [9. Setup and verification](#9-setup-and-verification) · [10. Repository](#10-repository-structure) · [11. Limitations](#11-known-limitations)
+**Contents:** [1. Use case](#1-problem-and-use-case) · [2. Data source](#2-data-source) · [3. Scope](#3-scope) · [4. Architecture v0.1](#4-architecture-v01-initial-plan) · [5. Architecture v0.2](#5-architecture-v02-midterm) · [6. Data model](#6-data-model) · [7. Setup and verification](#7-setup-and-verification) · [8. Repository](#8-repository-structure) · [9. Limitations](#9-known-limitations)
 
 ---
 
@@ -90,7 +90,6 @@ CLOB `/prices-history`:
 | API rate limits and transient errors | Retries with exponential backoff, request throttling and idempotent writes |
 | Gamma offset paging is capped at ~2,000 rows; the keyset endpoint returns sporadic HTTP 500s (found during implementation) | Page with `/markets/keyset` (cursor), page size 100, retries on 5xx |
 | Requests without a `User-Agent` header get HTTP 403 from Cloudflare | The HTTP client always sends a `User-Agent` |
-| Survivorship / look-ahead bias | Snapshot prices only use data strictly before the horizon timestamp |
 
 ---
 
@@ -154,14 +153,6 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | Schedule | daily | **daily** (02:00 UTC), incremental | Unchanged. During development we tried every 5 minutes: 288 runs/day, most loading 0 markets. The analysis uses daily prices and day-based horizons, and only ~30–40 in-scope markets close per day, so fresher data changes no result. A daily run also gives new markets a few hours to settle disputes. |
 | Initial backfill | 12 months | **30 days** (`LOOKBACK_DAYS`) | A reviewer can reproduce the backfill in about 10 minutes (~1,000 price-history calls plus ~250–1,000 market pages, instead of ~15,000 calls) |
 | Incremental key | `closedTime` of the previous day | **watermark** = end of the last successful *incremental* market window (`raw.ingestion_log.incremental`), minus a 15-minute overlap | Independent of the schedule: missed or failed runs are covered by the next run; the overlap catches markets that show up in the API late. Manual windows (reruns, backfills) do not move the watermark, so they cannot hide a gap before them |
-| Gamma paging | `/markets` with offset | `/markets/keyset` with cursor, newest-first by `closedTime`; the rest of the window in `endDate` slices | Offset paging is capped at ~2,000 rows (a 30-day backfill has 7,400–8,700). Since late October 2026 the closedTime paging cannot reach back the full 30 days (see [Known limitations](#11-known-limitations)) |
-| Raw landing | JSONB partitioned by load date | JSONB keyed by `market_id` (upsert), plus `run_id` and `ingested_at` | Idempotency through the natural key is simpler in PostgreSQL; load-date partitioning returns with GCS in the final |
-| Scope filtering | in the ingestion script | coarse pre-filter in the API call (volume, start date); exact rules in `staging.stg_markets` with an `exclusion_reason` | One place for the rules, raw keeps everything (re-filtering needs no re-download), exclusions are explainable |
-| Category scope | mainly politics, crypto, economics; `other` as catch-all | **only** politics, crypto, economics; `other` excluded (`out_of_scope_category`) | Team decision: keeps the analysis focused on the three categories of the research questions; costs ~16% of the markets (mostly AI/tech) |
-| Transformation | SQL / dbt | plain SQL files, executed by the pipeline image; full rebuild of marts in one transaction | Data is small (~2,700–3,100 snapshot rows); dbt is planned for BigQuery |
-| Data quality | planned for the final | `marts.dq_results` view (error / warn), checked as the last task | Cheap to add now and it protects the core table |
-| Tests | not planned | unit tests + SQL integration tests on fixture data, run by GitHub Actions on every push | The snapshot rules (no look-ahead, staleness, buckets) are easy to break silently. A test fails if they change. |
-| Scope thresholds | hard-coded | defined once in `config.py`, written to `staging.scope_settings` before every command | The API pre-filter and the SQL scope rules can no longer disagree |
 
 ### Docker setup
 
@@ -223,37 +214,11 @@ Partitioning and clustering (final): `fct_price_daily` is partitioned by `price_
 
 ---
 
-## 7. Project plan / backlog
-
-| Week | Milestone | Tasks |
-|---|---|---|
-| 3 (01.10) | **Initial pitch** | README, use case, data-source analysis, Architecture v0.1, backlog |
-| 4 | | Python ingestion for Gamma + CLOB, PostgreSQL schema, Docker Compose |
-| 5 | | Kestra flow: schedule, retries, backfill by date parameter |
-| 6 (22.10) | **Midterm submission** | First transformation (`fct_market_snapshot` in Postgres), Architecture v0.2, setup and verification docs |
-| 8–10 | | Terraform (GCS, BigQuery, service account), cloud ingestion direct to GCS |
-| 11 | | BigQuery external/native tables, partitioning and clustering |
-| 12 | | dbt models (staging → dims/facts → marts), tests, docs |
-| 13 (10.12) | **Final submission** | Data-quality checks, safe reruns, final architecture, verification queries, known limitations |
-
----
-
-## 8. Anticipated challenges
-
-- Correctly determining the **resolved outcome** and handling disputed or voided markets
-- Choosing a **consistent close timestamp** for horizon calculation
-- **Sparse prices** for low-liquidity markets at the 30-day horizon
-- **Category mapping** from free-form tags
-- **Rate limits** during the initial backfill (one price-history request per market)
-- **Sample size:** the calibration buckets need enough markets per category × horizon to be meaningful
-
----
-
-## 9. Setup and verification
+## 7. Setup and verification
 
 The procedures in this section use ASD-STE100 style: one action for each step, followed by the result.
 
-### 9.1 Prerequisites
+### 7.1 Prerequisites
 
 Make sure that you have:
 
@@ -265,11 +230,11 @@ Make sure that you have:
 You do not need:
 
 - API keys or cloud credentials.
-- A VPN in Switzerland. The pipeline gets around the Swiss DNS block itself (see [Known limitations](#11-known-limitations)).
+- A VPN in Switzerland. The pipeline gets around the Swiss DNS block itself (see [Known limitations](#9-known-limitations)).
 
 > **Note:** In Switzerland, `curl` to the Polymarket API can fail on your computer. The pipeline still works. This is expected.
 
-### 9.2 Start the environment
+### 7.2 Start the environment
 
 1. Clone the repository:
    ```bash
@@ -288,11 +253,11 @@ You do not need:
    **Result:** Docker builds the image `deng-pipeline:latest` and starts PostgreSQL and Kestra. The `pipeline` service creates the database schemas and stops with exit code 0. This is correct.
 4. Wait approximately 30 seconds. Kestra must start completely.
 
-### 9.3 Run the pipeline
+### 7.3 Run the pipeline
 
 1. Open **http://localhost:8080** in a browser.
    **Result:** The Kestra login page opens.
-   > **Note:** If the page shows `404 page not found`, another program uses port 8080. Do the steps in [Troubleshooting](#99-troubleshooting).
+   > **Note:** If the page shows `404 page not found`, another program uses port 8080. Do the steps in [Troubleshooting](#79-troubleshooting).
 2. Log in with the values from `.env`:
    - Email: `KESTRA_USER` (default `admin@kestra.io`)
    - Password: `KESTRA_PASSWORD` (default `ChangeMe123`)
@@ -303,7 +268,7 @@ You do not need:
 7. Click **Execute** again.
    **Result:** The first execution starts. This execution is the 30-day backfill.
 8. Wait 8 to 12 minutes.
-   > **Note:** `ingest_markets` takes approximately 7 minutes: Gamma cannot page back the full 30 days, so the pipeline reads the oldest days in `endDate` slices (see [Known limitations](#11-known-limitations)). `ingest_prices` takes approximately 2 to 3 minutes for approximately 1,000 price histories. Later executions are incremental and take 10 to 20 seconds.
+   > **Note:** `ingest_markets` takes approximately 7 minutes: Gamma cannot page back the full 30 days, so the pipeline reads the oldest days in `endDate` slices (see [Known limitations](#9-known-limitations)). `ingest_prices` takes approximately 2 to 3 minutes for approximately 1,000 price histories. Later executions are incremental and take 10 to 20 seconds.
 9. Make sure that all 4 tasks show `SUCCESS`:
    `ingest_markets` → `ingest_prices` → `transform` → `dq_check`
 10. Optional: Open the **Logs** tab of `dq_check`.
@@ -315,7 +280,7 @@ You do not need:
 
 *Reference run, 2026-10-24: first execution (30-day backfill), all 4 tasks succeeded in 7 m 28 s. Task order top to bottom: `ingest_markets`, `ingest_prices`, `transform`, `dq_check`.*
 
-### 9.4 Rerun or backfill a time window
+### 7.4 Rerun or backfill a time window
 
 1. In Kestra, open the flow **`polymarket_pipeline`**.
 2. Click **Execute**.
@@ -323,19 +288,19 @@ You do not need:
 4. Set `window_end`. Example: `2026-10-12T00:00:00Z`.
 5. Click **Execute** again.
    **Result:** The pipeline reads the markets that closed in this window again. It gets their price histories again and rebuilds the marts.
-6. Do query 5 in [9.7](#97-verify-the-data) before and after the rerun.
+6. Do query 5 in [7.7](#77-verify-the-data) before and after the rerun.
    **Result:** The row counts are the same. Each write is an upsert or a replace, so a rerun does not make duplicates.
 
-### 9.5 Recover a failed execution
+### 7.5 Recover a failed execution
 
 Do one of these steps:
 
 - In the Kestra execution, click **Restart**. Kestra runs the failed task again.
 - Wait for the next scheduled run. It starts from the last successful watermark and gets the missing price histories.
 
-> **Note:** A manual window (9.4) does not move the watermark. If the 30-day backfill failed, the next execution with empty inputs does the full backfill again.
+> **Note:** A manual window (7.4) does not move the watermark. If the 30-day backfill failed, the next execution with empty inputs does the full backfill again.
 
-### 9.6 Run the steps without Kestra (optional)
+### 7.6 Run the steps without Kestra (optional)
 
 You can run each step manually. The steps use the same image and the same commands as Kestra:
 
@@ -346,7 +311,7 @@ docker compose run --rm pipeline python -m polymarket_pipeline transform
 docker compose run --rm pipeline python -m polymarket_pipeline dq-check
 ```
 
-### 9.7 Verify the data
+### 7.7 Verify the data
 
 1. Open a SQL shell:
    ```bash
@@ -380,16 +345,9 @@ select prob_bucket, market_count, mean_implied_prob, observed_frequency, calibra
   from marts.mart_calibration_summary
  where category = 'all' and horizon_days = 7 order by prob_bucket;
 ```
+The numbers change with the day of the backfill.
 
-The numbers change with the day of the backfill. Our two reference runs:
-
-| Run date | Duration | Raw markets | In scope | Snapshot rows | Error checks | Rerun 10.10 → 12.10 |
-|---|---|---|---|---|---|---|
-| 2026-10-20 | ~6 min | 7,363 | 1,037 | 3,075 | all `PASS` | counts unchanged |
-| 2026-10-24 (macOS) | ~7.5 min | 8,734 | 919 | 2,719 | all `PASS` | counts unchanged |
-| 2026-10-25 (macOS, `endDate` fallback used) | ~10 min | 8,549 | 913 | 2,700 | all `PASS` | counts unchanged |
-
-### 9.8 Run the tests
+### 7.8 Run the tests
 
 1. Run this command:
    ```bash
@@ -404,7 +362,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 > **Note:** You can also run the tests locally with Python 3.12:
 > `pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest`
 
-### 9.9 Troubleshooting
+### 7.9 Troubleshooting
 
 | If | Then |
 |---|---|
@@ -414,7 +372,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 | `ingest_markets` shows connection timeouts | Make sure that your network allows HTTPS to `1.1.1.1`. If it does not, set `DOH_URL=` (empty) in `.env` and use a VPN. |
 | Kestra does not show a change in `orchestration/flows/` | Run `docker compose restart kestra`. Kestra reads the flows only when it starts. |
 
-### 9.10 Stop or reset
+### 7.10 Stop or reset
 
 - To stop and keep the data:
   ```bash
@@ -428,7 +386,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 
 ---
 
-## 10. Repository structure
+## 8. Repository structure
 
 ```
 .
@@ -451,7 +409,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 │   │   ├── gamma.py            # Gamma API: closed markets (keyset paging)
 │   │   ├── clob.py             # CLOB API: price history
 │   │   └── db.py               # PostgreSQL access
-│   └── tests/                  # unit tests + SQL integration tests (see 9.8)
+│   └── tests/                  # unit tests + SQL integration tests (see 7.8)
 ├── transformations/sql/
 │   ├── 00_raw.sql              # schemas, raw tables, ingestion log
 │   ├── 10_staging.sql          # tag → category map, staging views, scope rules
@@ -463,7 +421,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 └── terraform/                  # GCP infrastructure (final milestone, not created yet)
 ```
 
-## 11. Known limitations
+## 9. Known limitations
 
 - **Access from Switzerland:** Swiss ISPs (e.g. Swisscom) block `*.polymarket.com` via DNS under the Swiss Gambling Act. The pipeline works around this without a VPN:
   - `doh.py` resolves only the two API hosts through DNS-over-HTTPS (`DOH_URL`, default Cloudflare `1.1.1.1`).
