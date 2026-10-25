@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 import pytest
 
-from polymarket_pipeline import db
+from polymarket_pipeline import cli, db
 from polymarket_pipeline.config import Settings
 
 UTC = timezone.utc
@@ -289,3 +289,23 @@ def test_watermark_ignores_manual_windows(conn, settings):
         assert db.markets_watermark(conn) == t0 + timedelta(days=1)
     finally:
         conn.execute("delete from raw.ingestion_log where step = 'markets'")
+
+
+# --- write-audit-publish ---------------------------------------------------------------
+
+def test_failing_dq_check_keeps_the_published_marts(conn, settings):
+    published = q(conn, "select market_id, horizon_days, implied_prob from marts.fct_market_snapshot order by 1, 2")
+    mid = "ok_bad_price"
+    db.upsert_markets(conn, [market(mid)], "test")
+    db.save_price_history(conn, mid, f"yes-{mid}", history((h(7, -timedelta(hours=1)), 1.5)), "test")
+    try:
+        assert cli.cmd_transform(settings, None) == 1
+        # rollback: the snapshot still holds the last good build, without the bad market
+        assert q(conn, "select market_id, horizon_days, implied_prob from marts.fct_market_snapshot "
+                       "order by 1, 2") == published
+        assert q(conn, "select status, message like 'dq failed:%%' from raw.ingestion_log "
+                       "where step = 'transform' order by log_id desc limit 1") == [("failed", True)]
+    finally:
+        conn.execute("delete from raw.price_history where market_id = %s", (mid,))
+        conn.execute("delete from raw.markets where market_id = %s", (mid,))
+    assert cli.cmd_transform(settings, None) == 0

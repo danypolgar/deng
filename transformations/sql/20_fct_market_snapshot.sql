@@ -6,8 +6,9 @@
 -- in. Prices older than 3 days at the horizon are treated as missing (illiquid
 -- market) and the market x horizon row is left out.
 --
--- Rebuilt in full on every run (the data is small); because the transform runs in a
--- single transaction, readers never see a half-built table and reruns are idempotent.
+-- Rebuilt in full on every run (the data is small). The transform runs in a single
+-- transaction that is committed only if the error-level checks in 40_dq_checks.sql pass, so
+-- readers never see a half-built or failing table, and reruns are idempotent.
 
 create table if not exists marts.fct_market_snapshot (
     market_id       text          not null,

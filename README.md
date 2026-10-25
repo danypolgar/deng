@@ -181,7 +181,7 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | **Load window** | `ingest-markets` loads markets with `window_start ≤ closedTime < window_end`, paging newest-first by `closedTime` and stopping at the first page older than the window. If Gamma's query timeout stops the paging before `window_start`, the rest of the window is read in 7-day `endDate` slices and deduplicated by `market_id`. |
 | **Idempotency** | `raw.markets` upserts on `market_id`; `raw.price_history` replaces one row per market; marts are rebuilt from staging. Running the same window twice gives the same tables. |
 | **Price step** | Without a window: fetches every in-scope market that has **no price history yet**, plus markets whose history came back **empty** (up to 3 attempts, counted in `raw.price_history.fetch_attempts`). This is self-healing: a market that failed is retried by the next run. With a window: refetches all in-scope markets closed in that window. |
-| **Failure behaviour** | HTTP 429/5xx: retries with exponential backoff inside the client (prices: up to 6, markets: up to 3, because a Gamma timeout is not transient and the `endDate` fallback takes over). One failing market is logged and skipped (`status = partial`); the task fails only if every market failed. Kestra retries the API tasks up to 3 times (exponential, 30 s → 5 min). A failed DQ check fails the execution without retry. |
+| **Failure behaviour** | HTTP 429/5xx: retries with exponential backoff inside the client (prices: up to 6, markets: up to 3, because a Gamma timeout is not transient and the `endDate` fallback takes over). One failing market is logged and skipped (`status = partial`); the task fails only if every market failed. Kestra retries the API tasks up to 3 times (exponential, 30 s → 5 min). `transform` and `dq_check` are not retried: a failed data-quality check is a data problem. |
 | **Concurrency** | Kestra `concurrency.limit: 1` (queue): a long backfill and a scheduled run never write at the same time. |
 | **Observability** | Every step writes a row to `raw.ingestion_log` (run id = Kestra execution id, window, fetched / loaded / failed counts). |
 
@@ -191,6 +191,7 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 2. **`staging.stg_price_history` (view)**: one row per market × price point, from the CLOB JSON array.
 3. **`marts.fct_market_snapshot` (table)**: the core transformation for the use case. Calibration compares the **implied probability at a fixed time before close** with the **outcome**, but every market has its own irregular price series. The snapshot aligns all markets to the same three horizons (30 / 7 / 1 days before `closedTime`) and takes the **last price strictly before the horizon** (no look-ahead). Prices more than 3 days older than the horizon count as missing (illiquid market), and that market × horizon row is left out. The prob bucket (10% steps) and the squared error are precomputed for the summary.
 4. **`marts.mart_calibration_summary` (view)**: market count, mean implied probability, observed frequency, calibration gap and Brier score per category × horizon × bucket, plus pooled `category = 'all'` rows. It directly answers the analyst questions in section 1.
+5. **Data-quality gate (write-audit-publish)**: `transform` rebuilds the marts and runs the checks in `marts.dq_results` in **one transaction**. It commits only if every `error` check has 0 failing rows. If one fails, the transaction is rolled back: the analyst keeps the last good marts, `raw.ingestion_log` gets a `failed` transform row with the failing checks, and the execution stops. `dq_check` then reports all checks (`PASS` / `WARN`) on the published marts.
 
 ---
 
@@ -379,11 +380,11 @@ The numbers change with the day of the backfill.
    ```bash
    docker compose run --rm test
    ```
-   **Result:** `30 passed`. 16 are unit tests. 14 are SQL integration tests: they make a temporary database, load fixture markets with known correct results, run the real SQL files and delete the database after the test.
+   **Result:** `31 passed`. 16 are unit tests. 15 are SQL integration tests: they make a temporary database, load fixture markets with known correct results, run the real SQL files and delete the database after the test.
 
 > **Note:** The `test` service uses the `test` stage of the Dockerfile (runtime image + pytest + tests). `docker compose up` does not start it.
 
-> **Note:** The SQL integration tests check the scope rules, the no-look-ahead rule, the 3-day staleness limit, the buckets, the DQ checks, idempotency, the retry of empty histories and the watermark. If you change one of these rules, a test fails. GitHub Actions runs all tests on each push (see the CI badge at the top).
+> **Note:** The SQL integration tests check the scope rules, the no-look-ahead rule, the 3-day staleness limit, the buckets, the DQ checks, that a failing DQ check does not change the published marts, idempotency, the retry of empty histories and the watermark. If you change one of these rules, a test fails. GitHub Actions runs all tests on each push (see the CI badge at the top).
 
 > **Note:** You can also run the tests locally with Python 3.12:
 > `pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest`

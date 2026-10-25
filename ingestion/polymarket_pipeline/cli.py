@@ -112,12 +112,33 @@ def cmd_ingest_prices(settings: Settings, args) -> int:
     return 1 if failed and not loaded else 0
 
 
+class _DQFailed(Exception):
+    pass
+
+
+def _report_dq(results: list[tuple[str, str, int]]) -> list[str]:
+    for name, severity, failing in results:
+        outcome = "PASS" if failing == 0 else ("FAIL" if severity == "error" else "WARN")
+        log.info("%-4s %-40s %-5s failing_rows=%d", outcome, name, severity, failing)
+    return [name for name, severity, failing in results if severity == "error" and failing > 0]
+
+
 def cmd_transform(settings: Settings, _args) -> int:
     started = datetime.now(timezone.utc)
     with db.connect(settings) as conn:
         db.ensure_schema(conn, settings)
-        db.run_sql_files(conn, settings.sql_dir, db.TRANSFORM_FILES)
-        rows = conn.execute("select count(*) from marts.fct_market_snapshot").fetchone()[0]
+        try:
+            with conn.transaction():
+                db.run_sql_files(conn, settings.sql_dir, db.TRANSFORM_FILES)
+                errors = _report_dq(db.dq_results(conn))
+                if errors:
+                    raise _DQFailed(", ".join(errors))
+                rows = conn.execute("select count(*) from marts.fct_market_snapshot").fetchone()[0]
+        except _DQFailed as exc:
+            log.error("Data-quality checks failed (%s); the marts were not changed", exc)
+            db.log_run(conn, run_id=settings.run_id, step="transform", status="failed", started_at=started,
+                       message=f"dq failed: {exc}"[:1000])
+            return 1
         db.log_run(conn, run_id=settings.run_id, step="transform", status="success", started_at=started, loaded=rows)
     log.info("marts.fct_market_snapshot rebuilt with %d row(s)", rows)
     return 0
@@ -126,16 +147,9 @@ def cmd_transform(settings: Settings, _args) -> int:
 def cmd_dq_check(settings: Settings, _args) -> int:
     started = datetime.now(timezone.utc)
     with db.connect(settings) as conn:
-        results = conn.execute(
-            "select check_name, severity, failing_rows from marts.dq_results order by severity, check_name"
-        ).fetchall()
-        errors = [r for r in results if r[1] == "error" and r[2] > 0]
-        for name, severity, failing in results:
-            outcome = "PASS" if failing == 0 else ("FAIL" if severity == "error" else "WARN")
-            log.info("%-4s %-40s %-5s failing_rows=%d", outcome, name, severity, failing)
+        errors = _report_dq(db.dq_results(conn))
         db.log_run(conn, run_id=settings.run_id, step="dq_check", status="failed" if errors else "success",
-                   started_at=started, failed=len(errors),
-                   message=", ".join(r[0] for r in errors) or None)
+                   started_at=started, failed=len(errors), message=", ".join(errors) or None)
     return 1 if errors else 0
 
 

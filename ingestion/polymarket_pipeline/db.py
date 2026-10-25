@@ -116,6 +116,13 @@ def save_price_history(conn: psycopg.Connection, market_id: str, token_id: str, 
         )
 
 
+def dq_results(conn: psycopg.Connection) -> list[tuple[str, str, int]]:
+    """(check_name, severity, failing_rows) for every data-quality check."""
+    return conn.execute(
+        "select check_name, severity, failing_rows from marts.dq_results order by severity, check_name"
+    ).fetchall()
+
+
 def markets_watermark(conn: psycopg.Connection) -> datetime | None:
     row = conn.execute(
         "select max(window_end) from raw.ingestion_log"

@@ -2,7 +2,8 @@ id: polymarket_pipeline
 namespace: deng.polymarket
 description: |
   Batch pipeline for Polymarket calibration research (DENG HS26, Team 04).
-  ingest markets (Gamma) -> ingest price history (CLOB) -> transform (staging + marts) -> data-quality checks.
+  ingest markets (Gamma) -> ingest price history (CLOB) -> transform (staging + marts, published only if the
+  error-level data-quality checks pass) -> data-quality report.
 
   Scheduled runs (daily at 02:00 UTC) leave the inputs empty and load incrementally from the
   watermark; the very first run backfills the last 30 days.
@@ -89,7 +90,7 @@ tasks:
 
   - id: transform
     type: io.kestra.plugin.scripts.shell.Commands
-    description: Rebuild staging views, marts.fct_market_snapshot and marts.mart_calibration_summary
+    description: Rebuild the marts and publish them only if every error-level data-quality check passes (no retry - a failed check is a data problem)
     containerImage: deng-pipeline:latest
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker
@@ -103,16 +104,12 @@ tasks:
       PG_PASSWORD: "{{ envs.pg_password }}"
       RUN_ID: "{{ execution.id }}"
     timeout: PT15M
-    retry:
-      type: constant
-      interval: PT30S
-      maxAttempts: 2
     commands:
       - python -m polymarket_pipeline transform
 
   - id: dq_check
     type: io.kestra.plugin.scripts.shell.Commands
-    description: Data-quality checks; fails the execution if an error-level check fails (no retry - a failed check is a data problem)
+    description: Data-quality report on the published marts (PASS / WARN per check); fails the execution if an error-level check fails
     containerImage: deng-pipeline:latest
     taskRunner:
       type: io.kestra.plugin.scripts.runner.docker.Docker

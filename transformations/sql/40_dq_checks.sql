@@ -1,5 +1,6 @@
 -- Data-quality checks. One row per check with the number of failing rows.
--- severity 'error' fails the pipeline (dq-check exits 1); 'warn' is reported only.
+-- severity 'error': `transform` does not publish the rebuilt marts (rollback) and fails;
+-- `dq-check` also exits 1. 'warn' is reported only.
 
 create or replace view marts.dq_results as
 select 'snapshot_grain_unique' as check_name, 'error' as severity,
