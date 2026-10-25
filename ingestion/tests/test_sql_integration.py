@@ -266,3 +266,26 @@ def test_market_without_history_is_fetched(conn):
         assert mid in [m for m, _ in db.markets_needing_prices(conn, None, None)]
     finally:
         conn.execute("delete from raw.markets where market_id = %s", (mid,))
+
+
+# --- incremental watermark -------------------------------------------------------------
+
+def test_watermark_ignores_manual_windows(conn, settings):
+    t0 = datetime(2026, 10, 12, tzinfo=UTC)
+    conn.execute("delete from raw.ingestion_log where step = 'markets'")
+    try:
+        # Failed backfill, then a successful manual rerun of an old window: still no watermark,
+        # so the next incremental run backfills LOOKBACK_DAYS instead of starting at t0.
+        db.log_run(conn, run_id="t", step="markets", status="failed", started_at=t0,
+                   window_start=t0 - timedelta(days=30), window_end=t0, incremental=True)
+        db.log_run(conn, run_id="t", step="markets", status="success", started_at=t0,
+                   window_start=t0 - timedelta(days=2), window_end=t0)
+        assert db.markets_watermark(conn) is None
+
+        db.log_run(conn, run_id="t", step="markets", status="success", started_at=t0,
+                   window_start=t0 - timedelta(days=30), window_end=t0 + timedelta(days=1), incremental=True)
+        db.log_run(conn, run_id="t", step="markets", status="success", started_at=t0,
+                   window_start=t0, window_end=t0 + timedelta(days=5))
+        assert db.markets_watermark(conn) == t0 + timedelta(days=1)
+    finally:
+        conn.execute("delete from raw.ingestion_log where step = 'markets'")

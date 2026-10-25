@@ -118,7 +118,8 @@ def save_price_history(conn: psycopg.Connection, market_id: str, token_id: str, 
 
 def markets_watermark(conn: psycopg.Connection) -> datetime | None:
     row = conn.execute(
-        "select max(window_end) from raw.ingestion_log where step = 'markets' and status = 'success'"
+        "select max(window_end) from raw.ingestion_log"
+        " where step = 'markets' and status = 'success' and incremental"
     ).fetchone()
     return row[0]
 
@@ -132,6 +133,7 @@ def log_run(
     started_at: datetime,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
+    incremental: bool = False,
     fetched: int = 0,
     loaded: int = 0,
     failed: int = 0,
@@ -141,9 +143,10 @@ def log_run(
         conn.execute(
             """
             insert into raw.ingestion_log
-                (run_id, step, status, window_start, window_end,
+                (run_id, step, status, window_start, window_end, incremental,
                  records_fetched, records_loaded, records_failed, message, started_at, finished_at)
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
             """,
-            (run_id, step, status, window_start, window_end, fetched, loaded, failed, message, started_at),
+            (run_id, step, status, window_start, window_end, incremental, fetched, loaded, failed, message,
+             started_at),
         )

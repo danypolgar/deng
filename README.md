@@ -6,7 +6,7 @@
 
 An end-to-end batch data pipeline that ingests resolved Polymarket prediction markets and their price history and builds curated tables for **calibration research**. The midterm version runs locally (Docker Compose, Kestra, PostgreSQL). The final version moves storage and transformations to Google Cloud (GCS, BigQuery).
 
-**Reviewers:** go straight to [9. Setup and verification](#9-setup-and-verification). A full run takes about 10 minutes and needs only Docker.
+**Reviewers:** go straight to [9. Setup and verification](#9-setup-and-verification). A full run takes about 15 minutes and needs only Docker.
 
 **Contents:** [1. Use case](#1-problem-and-use-case) · [2. Data source](#2-data-source) · [3. Scope](#3-scope) · [4. Architecture v0.1](#4-architecture-v01-initial-plan) · [5. Architecture v0.2](#5-architecture-v02-midterm) · [6. Data model](#6-data-model) · [7. Plan](#7-project-plan--backlog) · [8. Challenges](#8-anticipated-challenges) · [9. Setup and verification](#9-setup-and-verification) · [10. Repository](#10-repository-structure) · [11. Limitations](#11-known-limitations)
 
@@ -152,9 +152,9 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | Area | v0.1 plan | v0.2 (implemented) | Why |
 |---|---|---|---|
 | Schedule | daily | **daily** (02:00 UTC), incremental | Unchanged. During development we tried every 5 minutes: 288 runs/day, most loading 0 markets. The analysis uses daily prices and day-based horizons, and only ~30–40 in-scope markets close per day, so fresher data changes no result. A daily run also gives new markets a few hours to settle disputes. |
-| Initial backfill | 12 months | **30 days** (`LOOKBACK_DAYS`) | A reviewer can reproduce the backfill in 6–8 minutes (~1,000–1,300 API calls instead of ~15,000) |
-| Incremental key | `closedTime` of the previous day | **watermark** = end of the last successful market window (`raw.ingestion_log`), minus a 15-minute overlap | Independent of the schedule: missed or failed runs are covered by the next run; the overlap catches markets that show up in the API late |
-| Gamma paging | `/markets` with offset | `/markets/keyset` with cursor | Offset paging is capped at ~2,000 rows (a 30-day backfill has 7,400–8,700) |
+| Initial backfill | 12 months | **30 days** (`LOOKBACK_DAYS`) | A reviewer can reproduce the backfill in about 10 minutes (~1,000 price-history calls plus ~250–1,000 market pages, instead of ~15,000 calls) |
+| Incremental key | `closedTime` of the previous day | **watermark** = end of the last successful *incremental* market window (`raw.ingestion_log.incremental`), minus a 15-minute overlap | Independent of the schedule: missed or failed runs are covered by the next run; the overlap catches markets that show up in the API late. Manual windows (reruns, backfills) do not move the watermark, so they cannot hide a gap before them |
+| Gamma paging | `/markets` with offset | `/markets/keyset` with cursor, newest-first by `closedTime`; the rest of the window in `endDate` slices | Offset paging is capped at ~2,000 rows (a 30-day backfill has 7,400–8,700). Since late October 2026 the closedTime paging cannot reach back the full 30 days (see [Known limitations](#11-known-limitations)) |
 | Raw landing | JSONB partitioned by load date | JSONB keyed by `market_id` (upsert), plus `run_id` and `ingested_at` | Idempotency through the natural key is simpler in PostgreSQL; load-date partitioning returns with GCS in the final |
 | Scope filtering | in the ingestion script | coarse pre-filter in the API call (volume, start date); exact rules in `staging.stg_markets` with an `exclusion_reason` | One place for the rules, raw keeps everything (re-filtering needs no re-download), exclusions are explainable |
 | Category scope | mainly politics, crypto, economics; `other` as catch-all | **only** politics, crypto, economics; `other` excluded (`out_of_scope_category`) | Team decision: keeps the analysis focused on the three categories of the research questions; costs ~16% of the markets (mostly AI/tech) |
@@ -186,7 +186,7 @@ Every Kestra task starts a container from the same image, `deng-pipeline:latest`
 | Concern | Implementation |
 |---|---|
 | **Modularity** | `http_client.py` (throttling, retries), `doh.py` (DNS-over-HTTPS for the API hosts), `gamma.py` (markets), `clob.py` (prices), `db.py` (all SQL access), `cli.py` (commands) |
-| **Full vs. incremental** | Incremental by default. The first run has no watermark and therefore backfills `LOOKBACK_DAYS`. Closed markets do not change, so a full reload is never needed. |
+| **Full vs. incremental** | Incremental by default. The first run has no watermark and therefore backfills `LOOKBACK_DAYS`. Only runs with an empty `window_start` set the watermark: until one of them succeeds, every incremental run backfills `LOOKBACK_DAYS` again. Closed markets do not change, so a full reload is never needed. |
 | **Load window** | `ingest-markets` loads markets with `window_start ≤ closedTime < window_end`, paging newest-first and stopping at the first page older than the window. |
 | **Idempotency** | `raw.markets` upserts on `market_id`; `raw.price_history` replaces one row per market; marts are rebuilt from staging. Running the same window twice gives the same tables. |
 | **Price step** | Without a window: fetches every in-scope market that has **no price history yet**, plus markets whose history came back **empty** (up to 3 attempts, counted in `raw.price_history.fetch_attempts`). This is self-healing: a market that failed is retried by the next run. With a window: refetches all in-scope markets closed in that window. |
@@ -302,8 +302,8 @@ You do not need:
 6. Keep the two inputs `window_start` and `window_end` empty.
 7. Click **Execute** again.
    **Result:** The first execution starts. This execution is the 30-day backfill.
-8. Wait 6 to 8 minutes.
-   > **Note:** Most of this time is approximately 1,000 price-history requests. Later executions are incremental and take 10 to 20 seconds.
+8. Wait 8 to 12 minutes.
+   > **Note:** `ingest_markets` takes approximately 7 minutes: Gamma cannot page back the full 30 days, so the pipeline reads the oldest days in `endDate` slices (see [Known limitations](#11-known-limitations)). `ingest_prices` takes approximately 2 to 3 minutes for approximately 1,000 price histories. Later executions are incremental and take 10 to 20 seconds.
 9. Make sure that all 4 tasks show `SUCCESS`:
    `ingest_markets` → `ingest_prices` → `transform` → `dq_check`
 10. Optional: Open the **Logs** tab of `dq_check`.
@@ -332,6 +332,8 @@ Do one of these steps:
 
 - In the Kestra execution, click **Restart**. Kestra runs the failed task again.
 - Wait for the next scheduled run. It starts from the last successful watermark and gets the missing price histories.
+
+> **Note:** A manual window (9.4) does not move the watermark. If the 30-day backfill failed, the next execution with empty inputs does the full backfill again.
 
 ### 9.6 Run the steps without Kestra (optional)
 
@@ -385,6 +387,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 |---|---|---|---|---|---|---|
 | 2026-10-20 | ~6 min | 7,363 | 1,037 | 3,075 | all `PASS` | counts unchanged |
 | 2026-10-24 (macOS) | ~7.5 min | 8,734 | 919 | 2,719 | all `PASS` | counts unchanged |
+| 2026-10-25 (macOS, `endDate` fallback used) | ~10 min | 8,549 | 913 | 2,700 | all `PASS` | counts unchanged |
 
 ### 9.8 Run the tests
 
@@ -392,11 +395,11 @@ The numbers change with the day of the backfill. Our two reference runs:
    ```bash
    docker compose run --rm test
    ```
-   **Result:** `25 passed`. 12 are unit tests. 13 are SQL integration tests: they make a temporary database, load fixture markets with known correct results, run the real SQL files and delete the database after the test.
+   **Result:** `30 passed`. 16 are unit tests. 14 are SQL integration tests: they make a temporary database, load fixture markets with known correct results, run the real SQL files and delete the database after the test.
 
 > **Note:** The `test` service uses the `test` stage of the Dockerfile (runtime image + pytest + tests). `docker compose up` does not start it.
 
-> **Note:** The SQL integration tests check the scope rules, the no-look-ahead rule, the 3-day staleness limit, the buckets, the DQ checks, idempotency and the retry of empty histories. If you change one of these rules, a test fails. GitHub Actions runs all tests on each push (see the CI badge at the top).
+> **Note:** The SQL integration tests check the scope rules, the no-look-ahead rule, the 3-day staleness limit, the buckets, the DQ checks, idempotency, the retry of empty histories and the watermark. If you change one of these rules, a test fails. GitHub Actions runs all tests on each push (see the CI badge at the top).
 
 > **Note:** You can also run the tests locally with Python 3.12:
 > `pip install -r ingestion/requirements-dev.txt && cd ingestion && python -m pytest`
@@ -472,6 +475,7 @@ The numbers change with the day of the backfill. Our two reference runs:
 - **Close vs. resolution:** horizons are measured from `closedTime`. Many markets are effectively decided before they close (prices already near 0 or 1), so the 1-day horizon looks very well calibrated; the 7- and 30-day horizons are more informative.
 - **Small sample:** 30 days give ~1,000 markets (crypto only ~60). Several category × horizon × bucket cells have fewer than 30 markets and should not be over-interpreted. A longer `LOOKBACK_DAYS` gives more data at the cost of a longer backfill.
 - **Narrow topic scope:** sports and every market outside politics, crypto and economics are excluded (~16% of the otherwise in-scope markets, mostly AI/tech). The category comes from a hand-maintained tag list, so a relevant market with an unmapped tag is excluded too; check `staging.stg_markets where exclusion_reason = 'out_of_scope_category'`.
+- **Gamma query timeout:** Gamma stops each query after ~2 s and answers HTTP 500. Paging newest-first by `closedTime`, it cannot get further back than ~38,000 closed markets (all volumes), which since late October 2026 is a bit less than 30 days. `gamma.py` then reads the rest of the window in 7-day `endDate` slices (from 1 year before to 2 years after the gap) and keeps the markets whose `closedTime` falls in it. A slice that also times out is read in `endDate` order. The `WARNING Gamma closedTime paging stopped at …` line in the `ingest_markets` log is expected. Markets without an `endDate` (~0.4%) cannot be found by the fallback, so they are missing from the oldest part of the backfill.
 - **Corrections after close:** incremental runs read markets by close time. A market that is changed after it closed (e.g. a disputed resolution) is only picked up by an explicit rerun of its window.
 - **Empty price histories:** an in-scope market whose CLOB history is empty is fetched again by the next runs, at most 3 times in total. After that it stays empty and the `in_scope_market_with_empty_price_history` warning reports it.
 - **Full rebuild of the marts** on every run: fine at this size (~1 s); the BigQuery version will use incremental `MERGE`.

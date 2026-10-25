@@ -45,12 +45,16 @@ def cmd_init_db(settings: Settings, _args) -> int:
 
 def cmd_ingest_markets(settings: Settings, args) -> int:
     started = datetime.now(timezone.utc)
-    session = ThrottledSession(settings.request_interval_seconds)
+    # Fewer HTTP-level retries than the default: Gamma's query timeouts are not transient, and
+    # iter_closed_markets switches to its endDate fallback instead.
+    session = ThrottledSession(settings.request_interval_seconds, max_retries=3)
+    # Only runs whose window starts at the watermark move it. A manual window (rerun or
+    # backfill) must not, or a later incremental run would skip the time before it.
+    explicit_start = _parse_cli_ts(args.start)
+    incremental = explicit_start is None
     with db.connect(settings) as conn:
         db.ensure_schema(conn, settings)
-        start, end = resolve_window(
-            _parse_cli_ts(args.start), _parse_cli_ts(args.end), db.markets_watermark(conn), settings
-        )
+        start, end = resolve_window(explicit_start, _parse_cli_ts(args.end), db.markets_watermark(conn), settings)
         log.info("Ingesting markets closed in [%s, %s)", start.isoformat(), end.isoformat())
         try:
             markets = list(
@@ -61,10 +65,11 @@ def cmd_ingest_markets(settings: Settings, args) -> int:
             loaded = db.upsert_markets(conn, markets, settings.run_id) if markets else 0
         except Exception as exc:
             db.log_run(conn, run_id=settings.run_id, step="markets", status="failed", started_at=started,
-                       window_start=start, window_end=end, message=str(exc)[:1000])
+                       window_start=start, window_end=end, incremental=incremental, message=str(exc)[:1000])
             raise
         db.log_run(conn, run_id=settings.run_id, step="markets", status="success", started_at=started,
-                   window_start=start, window_end=end, fetched=len(markets), loaded=loaded)
+                   window_start=start, window_end=end, incremental=incremental,
+                   fetched=len(markets), loaded=loaded)
     log.info("Loaded %d market(s) into raw.markets", loaded)
     return 0
 

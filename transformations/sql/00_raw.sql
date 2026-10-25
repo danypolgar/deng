@@ -43,3 +43,8 @@ create table if not exists raw.ingestion_log (
     started_at      timestamptz not null,
     finished_at     timestamptz not null default now()
 );
+-- true = the markets window started at the watermark (scheduled/empty-input run). Only these
+-- rows move the watermark, so a manual rerun or backfill window cannot hide a gap before it.
+-- Added after v0.2, so use ALTER for existing DBs (old rows count as manual: the next run
+-- then backfills LOOKBACK_DAYS once, which is safe because every write is an upsert).
+alter table raw.ingestion_log add column if not exists incremental boolean not null default false;
